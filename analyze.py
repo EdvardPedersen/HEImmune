@@ -2,8 +2,9 @@ import openslide as osli
 import cv2 as cv
 import numpy as np
 from math import pi
+from functools import partial
 
-slide = osli.OpenSlide("CMU-1.mrxs")
+slide = osli.OpenSlide("image/CMU-1.mrxs")
 
 minx = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
 miny = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
@@ -12,9 +13,14 @@ sizex = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
 
 hueLow = (0, 0, 10)
 hueHigh = (180, 255, 120)
+area_spec = (50, 500)
+circularity_spec = 0.8
+
+auto_forward = True
 
 
-def performit(minx, miny, sizex, sizey, hueLow, hueHigh, slide):
+def performit(minx, miny, sizex, sizey, slide):
+    global auto_forward
     iterations = []
     for y in range(miny, miny+sizey, 1024):
         for x in range(minx, minx+sizex, 1024):
@@ -39,19 +45,59 @@ def performit(minx, miny, sizex, sizey, hueLow, hueHigh, slide):
     overview = cv.cvtColor(np.array(slide.read_region((minx, miny), 7, (1024,1024)).convert('RGB')), cv.COLOR_RGB2BGR)
     overview_factor = slide.level_downsamples[7]
 
+    def update_config(param, value):
+        global hueLow, hueHigh, area_spec, circularity_spec, auto_forward
+        auto_forward = False
+        if param == "hue_min":
+            hueLow = (value, hueLow[1], hueLow[2])
+        elif param == "sat_min":
+            hueLow = (hueLow[0], value, hueLow[2])
+        elif param == "val_min":
+            hueLow = (hueLow[0], hueLow[1], value)
+        elif param == "hue_max":
+            hueHigh = (value, hueHigh[1], hueHigh[2])
+        elif param == "sat_max":
+            hueHigh = (hueHigh[0], value, hueHigh[2])
+        elif param == "val_max":
+            hueHigh = (hueHigh[0], hueHigh[1], value)
+        elif param == "area_min":
+            area_spec = (value, area_spec[1])
+        elif param == "area_max":
+            area_spec = (area_spec[0], value)
+        elif param == "circularity":
+            circularity_spec = value/100
+
+    hue_min = hueLow[0]
+    sat_min = hueLow[1]
+    val_min = hueLow[2]
+    hue_max = hueHigh[0]
+    sat_max = hueHigh[1]
+    val_max = hueHigh[2]
+    area_min = area_spec[0]
+    area_max = area_spec[1]
+    cir_min = int(circularity_spec*100)
+    cv.namedWindow('Mask')
+    cv.createTrackbar('Min hue',  'Mask', hue_min, 190, partial(update_config, "hue_min"))
+    cv.createTrackbar('Min sat',  'Mask', sat_min, 255, partial(update_config, "sat_min"))
+    cv.createTrackbar('Min val',  'Mask', val_min, 255, partial(update_config, "val_min"))
+    cv.createTrackbar('Max hue',  'Mask', hue_max, 190, partial(update_config, "hue_max"))
+    cv.createTrackbar('Max sat',  'Mask', sat_max, 255, partial(update_config, "sat_max"))
+    cv.createTrackbar('Max val',  'Mask', val_max, 255, partial(update_config, "val_max"))
+    cv.createTrackbar('Min area', 'Mask', area_min, 1000, partial(update_config, "area_min"))
+    cv.createTrackbar('Max area', 'Mask', area_max, 1000, partial(update_config, "area_max"))
+    cv.createTrackbar('Min circularity', 'Mask', cir_min, 100, partial(update_config, "circularity"))
+
     total_sum = 0
     while True:
         x,y = iterations[current_iter]
-        num += 1
-        if num % 100 == 0:
-            print("Num: {} : {} {}".format(num, x, y))
         img = slide.read_region((x,y),0,(1024, 1024)).convert('RGB')
         if(img.getbbox() == None):
-            try:
-                current_iter = move(current_iter, going_forward)
-            except:
-                return
-            continue
+            if auto_forward:
+                try:
+                    current_iter = move(current_iter, going_forward)
+                except Exception as e:
+                    return
+                continue
         cvimg = cv.cvtColor(np.array(img), cv.COLOR_RGB2BGR)
         hsvimg = cv.cvtColor(cvimg, cv.COLOR_BGR2HSV)
         mask = cv.inRange(hsvimg, hueLow, hueHigh)
@@ -64,18 +110,20 @@ def performit(minx, miny, sizex, sizey, hueLow, hueHigh, slide):
             if perimiter == 0:
                 continue
             circularity = 4*pi*(area/(perimiter**2))
-            if 50 < area < 500 and circularity > 0.8:
+            if area_spec[0] < area < area_spec[1] and circularity > circularity_spec:
                 immune_cells.append(con)
         if len(immune_cells) == 0:
-            try:
-                current_iter = move(current_iter, going_forward)
-            except:
-                return
-            continue
+            if auto_forward:
+                try:
+                    current_iter = move(current_iter, going_forward)
+                except:
+                    return
+                if(auto_forward):
+                    continue
         else:
-            print("Immune cells in image: {}".format(len(immune_cells)))
+            #print("Immune cells in image: {}".format(len(immune_cells)))
             total_sum += len(immune_cells)
-            print("Total {} in {} iterations".format(total_sum, current_iter))
+            #print("Total {} in {} iterations".format(total_sum, current_iter))
         cv.imshow("Mask", mask_contours)
         cvimg2 = cvimg.copy()
         cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
@@ -84,24 +132,28 @@ def performit(minx, miny, sizex, sizey, hueLow, hueHigh, slide):
         cv.imshow("Original", cvimg)
         cv.imshow("Detected immunocells", cvimg2)
         cv.imshow("Overview", over)
-        key = cv.waitKey()
+        key = cv.waitKey(100)
         if key == 27:
             return
-        elif key == 81:
+        elif key == 49:
             going_forward = False
+            auto_forward = True
             try:
                 current_iter = move(current_iter, going_forward)
             except:
                 return
-        elif key == 83:
+        elif key == 50:
             going_forward = True
+            auto_forward = True
             try:
                 current_iter = move(current_iter, going_forward)
             except:
                 return
+        elif key >= 0:
+            print("Button pressed {}".format(key))
 
 
-performit(minx, miny, sizex, sizey, hueLow, hueHigh, slide)
+performit(minx, miny, sizex, sizey, slide)
 
 slide.close()
 
