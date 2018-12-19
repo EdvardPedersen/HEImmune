@@ -22,9 +22,11 @@ auto_forward = True
 def performit(minx, miny, sizex, sizey, slide):
     global auto_forward
     iterations = []
+    it_colors = []
     for y in range(miny, miny+sizey, 1024):
         for x in range(minx, minx+sizex, 1024):
             iterations.append((x,y))
+            it_colors.append((0,0,0))
     num = 0
     detector = cv.ORB.create()
     current_iter = 0
@@ -124,12 +126,17 @@ def performit(minx, miny, sizex, sizey, slide):
                     continue
         else:
             print("Immune cells in image: {}".format(len(immune_cells)))
+            it_colors[current_iter] = (0,len(immune_cells)*2,0)
             total_sum += len(immune_cells)
             #print("Total {} in {} iterations".format(total_sum, current_iter))
         cv.imshow("Mask", mask_contours)
         cvimg2 = cvimg.copy()
         cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
         over = overview.copy()
+        for i in range(len(iterations)):
+            rec_x,rec_y = iterations[i]
+            color = it_colors[i]
+            cv.rectangle(over, (int((rec_x-minx)/overview_factor),int((rec_y-miny)/overview_factor)), (int(((rec_x-minx)+1024)/overview_factor) - 1, int(((rec_y-miny)+1024)/overview_factor) - 1), color)
         cv.rectangle(over, (int((x-minx)/overview_factor),int((y-miny)/overview_factor)), (int(((x-minx)+1024)/overview_factor), int(((y-miny)+1024)/overview_factor)), (0,255,0))
         cv.imshow("Original", cvimg)
         cv.imshow("Detected immunocells", cvimg2)
