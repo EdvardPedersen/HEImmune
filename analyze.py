@@ -4,7 +4,7 @@ import numpy as np
 from math import pi
 from functools import partial
 
-slide = osli.OpenSlide("image/CMU-1.mrxs")
+slide = osli.OpenSlide("image/No_name_HE/1M01.mrxs")
 
 minx = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
 miny = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
@@ -12,9 +12,9 @@ sizey = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
 sizex = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
 
 hueLow = (0, 0, 10)
-hueHigh = (180, 255, 120)
-area_spec = (50, 500)
-circularity_spec = 0.8
+hueHigh = (140, 255, 70)
+area_spec = (150, 250)
+circularity_spec = 0.5
 
 auto_forward = True
 
@@ -100,6 +100,8 @@ def performit(minx, miny, sizex, sizey, slide):
                 continue
         cvimg = cv.cvtColor(np.array(img), cv.COLOR_RGB2BGR)
         hsvimg = cv.cvtColor(cvimg, cv.COLOR_BGR2HSV)
+        hsvimg = cv.bilateralFilter(hsvimg,5,75,75)
+        # blur for the mask?
         mask = cv.inRange(hsvimg, hueLow, hueHigh)
         mask_contours, contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
         
@@ -121,7 +123,7 @@ def performit(minx, miny, sizex, sizey, slide):
                 if(auto_forward):
                     continue
         else:
-            #print("Immune cells in image: {}".format(len(immune_cells)))
+            print("Immune cells in image: {}".format(len(immune_cells)))
             total_sum += len(immune_cells)
             #print("Total {} in {} iterations".format(total_sum, current_iter))
         cv.imshow("Mask", mask_contours)
