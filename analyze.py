@@ -1,20 +1,34 @@
 import openslide as osli
 import cv2 as cv
 import numpy as np
+import argparse
 from math import pi
 from functools import partial
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as gtk
 
-slide = osli.OpenSlide("image/No_name_HE/1M01.mrxs")
+# construct the argument parser and parse the arguments
+ap = argparse.ArgumentParser()
+ap.add_argument("-i", "--image", required=True,
+	help="path to input image")
+args = vars(ap.parse_args())
+
+#Added screen resolution. On my machine the mask window was not resizable and the controls were stuck outside the
+screen_height = int(gtk.Window().get_screen().get_height())
+window_size = int(0.75*screen_height)
+
+slide = osli.OpenSlide(args["image"])
 
 minx = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
 miny = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
 sizey = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
 sizex = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
 
-hueLow = (0, 0, 10)
-hueHigh = (140, 255, 70)
-area_spec = (150, 250)
-circularity_spec = 0.5
+hueLow = (120, 0, 60)
+hueHigh = (140, 255, 110)
+area_spec = (200, 4000)
+circularity_spec = 0.4
 
 auto_forward = True
 
@@ -78,15 +92,15 @@ def performit(minx, miny, sizex, sizey, slide):
     area_min = area_spec[0]
     area_max = area_spec[1]
     cir_min = int(circularity_spec*100)
-    cv.namedWindow('Mask')
+    cv.namedWindow('Mask', cv.WINDOW_NORMAL)
     cv.createTrackbar('Min hue',  'Mask', hue_min, 190, partial(update_config, "hue_min"))
     cv.createTrackbar('Min sat',  'Mask', sat_min, 255, partial(update_config, "sat_min"))
     cv.createTrackbar('Min val',  'Mask', val_min, 255, partial(update_config, "val_min"))
     cv.createTrackbar('Max hue',  'Mask', hue_max, 190, partial(update_config, "hue_max"))
     cv.createTrackbar('Max sat',  'Mask', sat_max, 255, partial(update_config, "sat_max"))
     cv.createTrackbar('Max val',  'Mask', val_max, 255, partial(update_config, "val_max"))
-    cv.createTrackbar('Min area', 'Mask', area_min, 1000, partial(update_config, "area_min"))
-    cv.createTrackbar('Max area', 'Mask', area_max, 1000, partial(update_config, "area_max"))
+    cv.createTrackbar('Min area', 'Mask', area_min, 5000, partial(update_config, "area_min"))
+    cv.createTrackbar('Max area', 'Mask', area_max, 5000, partial(update_config, "area_max"))
     cv.createTrackbar('Min circularity', 'Mask', cir_min, 100, partial(update_config, "circularity"))
 
     total_sum = 0
@@ -102,9 +116,14 @@ def performit(minx, miny, sizex, sizey, slide):
                 continue
         cvimg = cv.cvtColor(np.array(img), cv.COLOR_RGB2BGR)
         hsvimg = cv.cvtColor(cvimg, cv.COLOR_BGR2HSV)
-        hsvimg = cv.bilateralFilter(hsvimg,5,75,75)
-        # blur for the mask?
+        #Tweaked the bilateral filter as it was not doing much
+        hsvimg = cv.bilateralFilter(hsvimg,5, 150, 150)
         mask = cv.inRange(hsvimg, hueLow, hueHigh)
+        #Added morph open
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=2)
+
+
         mask_contours, contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
         
         immune_cells = []
@@ -129,7 +148,8 @@ def performit(minx, miny, sizex, sizey, slide):
             it_colors[current_iter] = (0,len(immune_cells)*2,0)
             total_sum += len(immune_cells)
             #print("Total {} in {} iterations".format(total_sum, current_iter))
-        cv.imshow("Mask", mask_contours)
+        cv.resizeWindow("Mask", window_size, window_size)
+        cv.imshow("Mask", mask)
         cvimg2 = cvimg.copy()
         cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
         over = overview.copy()
@@ -140,6 +160,7 @@ def performit(minx, miny, sizex, sizey, slide):
         cv.rectangle(over, (int((x-minx)/overview_factor),int((y-miny)/overview_factor)), (int(((x-minx)+1024)/overview_factor), int(((y-miny)+1024)/overview_factor)), (0,255,0))
         cv.imshow("Original", cvimg)
         cv.imshow("Detected immunocells", cvimg2)
+        cv.imshow("Filtered image", cv.bitwise_and(cvimg, cvimg,mask=mask))
         cv.imshow("Overview", over)
         key = cv.waitKey(100)
         if key == 27:
