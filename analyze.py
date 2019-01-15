@@ -1,36 +1,51 @@
-import openslide as osli
-import cv2 as cv
-import numpy as np
 from math import pi
 from functools import partial
 
+import openslide as osli
+import cv2 as cv
+import numpy as np
+
+# Open file with openslide
 slide = osli.OpenSlide("image/No_name_HE/1M01.mrxs")
 
+# Configuration - from slide
 minx = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
 miny = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
 sizey = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
 sizex = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
 
+# Configuration - default analysis parameters
 hueLow = (0, 0, 10)
 hueHigh = (140, 255, 70)
 area_spec = (150, 250)
 circularity_spec = 0.5
 
+# State
 auto_forward = True
 
 
+# Image + configuration from image
 def performit(minx, miny, sizex, sizey, slide):
+    # State
     global auto_forward
+
+    # List of image segments to show
     iterations = []
+    # Color of image segments (i.e. number cells found)
     it_colors = []
+    # Populate the iteration list and colors
     for y in range(miny, miny+sizey, 1024):
         for x in range(minx, minx+sizex, 1024):
             iterations.append((x,y))
             it_colors.append((0,0,0))
-    num = 0
-    detector = cv.ORB.create()
+    
+    # The image segment currently being analyzed
     current_iter = 0
+
+    # Direction (true = forward)
     going_forward = True
+
+    # Move current_iter
     def move(current_iter, going_forward):
         if going_forward:
             current_iter += 1
@@ -44,9 +59,13 @@ def performit(minx, miny, sizex, sizey, slide):
             raise IndexError("Reached start")
         return current_iter
 
+    # Read region from slide -> convert to RGB -> convert to numpy array -> convert til BGR
     overview = cv.cvtColor(np.array(slide.read_region((minx, miny), 7, (1024,1024)).convert('RGB')), cv.COLOR_RGB2BGR)
+
+    # Downsampling factor of overview
     overview_factor = slide.level_downsamples[7]
 
+    # Update the contents of configuration variables
     def update_config(param, value):
         global hueLow, hueHigh, area_spec, circularity_spec, auto_forward
         auto_forward = False
@@ -69,6 +88,7 @@ def performit(minx, miny, sizex, sizey, slide):
         elif param == "circularity":
             circularity_spec = value/100
 
+    # Constants based on configuration
     hue_min = hueLow[0]
     sat_min = hueLow[1]
     val_min = hueLow[2]
@@ -78,6 +98,8 @@ def performit(minx, miny, sizex, sizey, slide):
     area_min = area_spec[0]
     area_max = area_spec[1]
     cir_min = int(circularity_spec*100)
+
+    # Create trackbars with callback for configuration update
     cv.namedWindow('Mask')
     cv.createTrackbar('Min hue',  'Mask', hue_min, 190, partial(update_config, "hue_min"))
     cv.createTrackbar('Min sat',  'Mask', sat_min, 255, partial(update_config, "sat_min"))
@@ -89,10 +111,13 @@ def performit(minx, miny, sizex, sizey, slide):
     cv.createTrackbar('Max area', 'Mask', area_max, 1000, partial(update_config, "area_max"))
     cv.createTrackbar('Min circularity', 'Mask', cir_min, 100, partial(update_config, "circularity"))
 
-    total_sum = 0
+    # Main loop
     while True:
+        # Set coordinates based on current iteration
         x,y = iterations[current_iter]
+        # Get image for the coordinates
         img = slide.read_region((x,y),0,(1024, 1024)).convert('RGB')
+        # Optimization to discard blank images
         if(img.getbbox() == None):
             if auto_forward:
                 try:
@@ -100,14 +125,18 @@ def performit(minx, miny, sizex, sizey, slide):
                 except Exception as e:
                     return
                 continue
-        cvimg = cv.cvtColor(np.array(img), cv.COLOR_RGB2BGR)
-        hsvimg = cv.cvtColor(cvimg, cv.COLOR_BGR2HSV)
+        # Convert from BGR to HSV
+        hsvimg = cv.cvtColor(np.array(img), cv.COLOR_RGB2HSV)
+        # Blur the image
         hsvimg = cv.bilateralFilter(hsvimg,5,75,75)
-        # blur for the mask?
+        # Generate mask based on HSV values
         mask = cv.inRange(hsvimg, hueLow, hueHigh)
-        mask_contours, contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+        # Contours based on mask
+        contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
         
+        # List of immune cells
         immune_cells = []
+        # Generate immune cell candidates based on circularity and area
         for con in contours:
             area = cv.contourArea(con)
             perimiter = cv.arcLength(con, True)
@@ -116,6 +145,8 @@ def performit(minx, miny, sizex, sizey, slide):
             circularity = 4*pi*(area/(perimiter**2))
             if area_spec[0] < area < area_spec[1] and circularity > circularity_spec:
                 immune_cells.append(con)
+
+        # Skip forward to next image if no immune cells were found
         if len(immune_cells) == 0:
             if auto_forward:
                 try:
@@ -125,23 +156,35 @@ def performit(minx, miny, sizex, sizey, slide):
                 if(auto_forward):
                     continue
         else:
+            # Print the number of immune cells
             print("Immune cells in image: {}".format(len(immune_cells)))
+            # Set color on overview
             it_colors[current_iter] = (0,len(immune_cells)*2,0)
-            total_sum += len(immune_cells)
-            #print("Total {} in {} iterations".format(total_sum, current_iter))
-        cv.imshow("Mask", mask_contours)
-        cvimg2 = cvimg.copy()
+        # Show mask
+        cv.imshow("Mask", mask)
+        # Original image with immune cells outlined
+        cvimg2 = np.array(img).copy()
         cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+
+        # Copy overview
         over = overview.copy()
+        # Draw rectangles on overview based on how many immune cells are present
         for i in range(len(iterations)):
             rec_x,rec_y = iterations[i]
             color = it_colors[i]
             cv.rectangle(over, (int((rec_x-minx)/overview_factor),int((rec_y-miny)/overview_factor)), (int(((rec_x-minx)+1024)/overview_factor) - 1, int(((rec_y-miny)+1024)/overview_factor) - 1), color)
+        # Draw rectangle on overview based on current segment
         cv.rectangle(over, (int((x-minx)/overview_factor),int((y-miny)/overview_factor)), (int(((x-minx)+1024)/overview_factor), int(((y-miny)+1024)/overview_factor)), (0,255,0))
-        cv.imshow("Original", cvimg)
+        # Show original image
+        cv.imshow("Original", np.array(img))
+        # Show immune cells on original image
         cv.imshow("Detected immunocells", cvimg2)
+        # Show overview
         cv.imshow("Overview", over)
+
+        # Event loop
         key = cv.waitKey(100)
+        # Check for key presses
         if key == 27:
             return
         elif key == 49:
@@ -162,8 +205,11 @@ def performit(minx, miny, sizex, sizey, slide):
             print("Button pressed {}".format(key))
 
 
+# Start the analysis
 performit(minx, miny, sizex, sizey, slide)
 
+# Close image file
 slide.close()
 
+# Close all windows
 cv.destroyAllWindows()
