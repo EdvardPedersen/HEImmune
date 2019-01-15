@@ -1,135 +1,99 @@
 from math import pi
 from functools import partial
+import argparse
 
 import openslide as osli
 import cv2 as cv
 import numpy as np
 
 # Open file with openslide
-slide = osli.OpenSlide("image/No_name_HE/1M01.mrxs")
 
 # Configuration - from slide
-minx = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
-miny = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
-sizey = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
-sizex = int(slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
 
-# Configuration - default analysis parameters
-hueLow = (0, 0, 10)
-hueHigh = (140, 255, 70)
-area_spec = (150, 250)
-circularity_spec = 0.5
-
-# State
-auto_forward = True
-
-
-# Image + configuration from image
-def performit(minx, miny, sizex, sizey, slide):
-    # State
-    global auto_forward
-
-    # List of image segments to show
-    iterations = []
-    # Color of image segments (i.e. number cells found)
-    it_colors = []
-    # Populate the iteration list and colors
-    for y in range(miny, miny+sizey, 1024):
-        for x in range(minx, minx+sizex, 1024):
-            iterations.append((x,y))
-            it_colors.append((0,0,0))
+class Configuration:
+    def __init__(self):
+        self.options = self._cmd_line_args()
     
-    # The image segment currently being analyzed
-    current_iter = 0
+    def _cmd_line_args(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--hue_min', type=int, default=0)
+        parser.add_argument('--sat_min', type=int, default=0)
+        parser.add_argument('--val_min', type=int, default=10)
+        parser.add_argument('--hue_max', type=int, default=140)
+        parser.add_argument('--sat_max', type=int, default=255)
+        parser.add_argument('--val_max', type=int, default=70)
+        parser.add_argument('--area_min', type=int, default=200)
+        parser.add_argument('--area_max', type=int, default=1500)
+        parser.add_argument('--circularity', type=float, default=0.5)
+        parser.add_argument('--input', required=True)
+        return parser.parse_args()
 
-    # Direction (true = forward)
-    going_forward = True
+    def update_configuration(self, name, value):
+        options = vars(self.options)
+        options[name] = value
 
-    # Move current_iter
-    def move(current_iter, going_forward):
-        if going_forward:
-            current_iter += 1
-        else:
-            current_iter -= 1
-        if current_iter >= len(iterations):
-            current_iter = len(iterations) - 1
-            raise IndexError("Reached end")
-        elif current_iter < 0:
-            current_iter = 0
-            raise IndexError("Reached start")
-        return current_iter
+class Main:
+    def __init__(self):
+        self.conf = Configuration()
+        self.slide = self.load_image()
+        self.iterations, self.it_colors = self.make_iterations()
+        self.overview_factor, self.overview = self.generate_overview()
 
-    # Read region from slide -> convert to RGB -> convert to numpy array -> convert til BGR
-    overview = cv.cvtColor(np.array(slide.read_region((minx, miny), 7, (1024,1024)).convert('RGB')), cv.COLOR_RGB2BGR)
+        self.auto_forward = True
+        self.move_steps = 1
 
-    # Downsampling factor of overview
-    overview_factor = slide.level_downsamples[7]
+        self.current_iter = 0
 
-    # Update the contents of configuration variables
-    def update_config(param, value):
-        global hueLow, hueHigh, area_spec, circularity_spec, auto_forward
-        auto_forward = False
-        if param == "hue_min":
-            hueLow = (value, hueLow[1], hueLow[2])
-        elif param == "sat_min":
-            hueLow = (hueLow[0], value, hueLow[2])
-        elif param == "val_min":
-            hueLow = (hueLow[0], hueLow[1], value)
-        elif param == "hue_max":
-            hueHigh = (value, hueHigh[1], hueHigh[2])
-        elif param == "sat_max":
-            hueHigh = (hueHigh[0], value, hueHigh[2])
-        elif param == "val_max":
-            hueHigh = (hueHigh[0], hueHigh[1], value)
-        elif param == "area_min":
-            area_spec = (value, area_spec[1])
-        elif param == "area_max":
-            area_spec = (area_spec[0], value)
-        elif param == "circularity":
-            circularity_spec = value/100
+    def make_iterations(self):
+        iterations = []
+        it_colors = []
 
-    # Constants based on configuration
-    hue_min = hueLow[0]
-    sat_min = hueLow[1]
-    val_min = hueLow[2]
-    hue_max = hueHigh[0]
-    sat_max = hueHigh[1]
-    val_max = hueHigh[2]
-    area_min = area_spec[0]
-    area_max = area_spec[1]
-    cir_min = int(circularity_spec*100)
+        minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
+        miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
+        sizey = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
+        sizex = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
+        for y in range(miny, miny+sizey, 1024):
+            for x in range(minx, minx+sizex, 1024):
+                iterations.append((x,y))
+                it_colors.append((0,0,0))
+        return iterations, it_colors
 
-    # Create trackbars with callback for configuration update
-    cv.namedWindow('Mask')
-    cv.createTrackbar('Min hue',  'Mask', hue_min, 190, partial(update_config, "hue_min"))
-    cv.createTrackbar('Min sat',  'Mask', sat_min, 255, partial(update_config, "sat_min"))
-    cv.createTrackbar('Min val',  'Mask', val_min, 255, partial(update_config, "val_min"))
-    cv.createTrackbar('Max hue',  'Mask', hue_max, 190, partial(update_config, "hue_max"))
-    cv.createTrackbar('Max sat',  'Mask', sat_max, 255, partial(update_config, "sat_max"))
-    cv.createTrackbar('Max val',  'Mask', val_max, 255, partial(update_config, "val_max"))
-    cv.createTrackbar('Min area', 'Mask', area_min, 1000, partial(update_config, "area_min"))
-    cv.createTrackbar('Max area', 'Mask', area_max, 1000, partial(update_config, "area_max"))
-    cv.createTrackbar('Min circularity', 'Mask', cir_min, 100, partial(update_config, "circularity"))
+    def move(self):
+        move_to = self.current_iter + self.move_steps
+        if move_to < 0 or move_to > len(self.iterations):
+            print("Tried to move to {}".format(move_to))
+            raise IndexError("Reached end of slide set")
+        return move_to
 
-    # Main loop
-    while True:
-        # Set coordinates based on current iteration
-        x,y = iterations[current_iter]
-        # Get image for the coordinates
-        img = slide.read_region((x,y),0,(1024, 1024)).convert('RGB')
-        # Optimization to discard blank images
-        if(img.getbbox() == None):
-            if auto_forward:
-                try:
-                    current_iter = move(current_iter, going_forward)
-                except Exception as e:
-                    return
-                continue
-        # Convert from BGR to HSV
-        hsvimg = cv.cvtColor(np.array(img), cv.COLOR_RGB2HSV)
+    def auto_move(self):
+        if self.auto_forward:
+            try:
+                self.current_iter = self.move()
+            except Exception as e:
+                print("Out of bounds at iteration {}".format(self.current_iter))
+                print(e)
+                exit()
+
+    def generate_overview(self):
+        minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
+        miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
+        region = self.slide.read_region((minx, miny), 7, (1024,1024)).convert('RGB')
+        overview = cv.cvtColor(np.array(region), cv.COLOR_RGB2BGR)
+        overview_factor = self.slide.level_downsamples[7]
+        return overview_factor, overview
+        
+
+    def get_region(self, iteration, size):
+        coords = self.iterations[iteration]
+        return self.slide.read_region(coords,0,(size,size)).convert('RGB')
+
+    def get_immune_cells(self, segment):
+        hsvimg = cv.cvtColor(np.array(segment), cv.COLOR_RGB2HSV)
         # Blur the image
         hsvimg = cv.bilateralFilter(hsvimg,5,75,75)
         # Generate mask based on HSV values
+        hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
+        hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
         mask = cv.inRange(hsvimg, hueLow, hueHigh)
         # Contours based on mask
         contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
@@ -143,73 +107,110 @@ def performit(minx, miny, sizex, sizey, slide):
             if perimiter == 0:
                 continue
             circularity = 4*pi*(area/(perimiter**2))
-            if area_spec[0] < area < area_spec[1] and circularity > circularity_spec:
+            if self.conf.options.area_min < area < self.conf.options.area_max and circularity > self.conf.options.circularity:
                 immune_cells.append(con)
+        return immune_cells, mask
+        
+    def draw_overview_overlay(self):
+        # Copy overview
+        over = self.overview.copy()
 
-        # Skip forward to next image if no immune cells were found
-        if len(immune_cells) == 0:
-            if auto_forward:
+        def min_overview(x, y):
+            ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])) / self.overview_factor)
+            ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])) / self.overview_factor)
+            return (ret_x, ret_y)
+        
+        def max_overview(x, y):
+            ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])) + 1024 / self.overview_factor) - 1
+            ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])) + 1024 / self.overview_factor) - 1
+            return (ret_x, ret_y)
+
+        # Draw rectangles on overview based on how many immune cells are present
+        for iteration, color in zip(self.iterations, self.it_colors):
+            rec_x,rec_y = iteration
+            cv.rectangle(over, min_overview(rec_x, rec_y), max_overview(rec_x, rec_y), color)
+        # Draw rectangle on overview based on current segment
+        current_x, current_y = self.iterations[self.current_iter]
+        cv.rectangle(over, min_overview(current_x, current_y), max_overview(current_x, current_y), (0,255,0))
+        return over
+        
+
+    def mainloop(self):
+        while True:
+            img = self.get_region(self.current_iter, 1024)
+            # Optimization to discard blank images
+            if(img.getbbox() == None):
+                self.auto_move()
+
+            # Convert from BGR to HSV
+            immune_cells, mask = self.get_immune_cells(img)
+
+            # Skip forward to next image if no immune cells were found
+            if len(immune_cells) == 0:
+                self.auto_move()
+                continue
+            else:
+                # Print the number of immune cells
+                print("Immune cells in image: {}".format(len(immune_cells)))
+                # Set color on overview
+                self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
+            # Show mask
+            cv.imshow("Mask", mask)
+            # Original image with immune cells outlined
+            cvimg2 = np.array(img).copy()
+            cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+            over = self.draw_overview_overlay()
+
+            # Show original image
+            cv.imshow("Original", np.array(img))
+            # Show immune cells on original image
+            cv.imshow("Detected immunocells", cvimg2)
+            # Show overview
+            cv.imshow("Overview", over)
+
+            # Event loop
+            key = cv.waitKey(100)
+            # Check for key presses
+            if key == 27:
+                return
+            elif key == 49:
+                self.going_forward = False
+                self.auto_forward = True
                 try:
-                    current_iter = move(current_iter, going_forward)
+                    self.current_iter = self.move()
                 except:
                     return
-                if(auto_forward):
-                    continue
-        else:
-            # Print the number of immune cells
-            print("Immune cells in image: {}".format(len(immune_cells)))
-            # Set color on overview
-            it_colors[current_iter] = (0,len(immune_cells)*2,0)
-        # Show mask
-        cv.imshow("Mask", mask)
-        # Original image with immune cells outlined
-        cvimg2 = np.array(img).copy()
-        cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+            elif key == 50:
+                self.going_forward = True
+                self.auto_forward = True
+                try:
+                    self.current_iter = self.move()
+                except:
+                    return
+            elif key >= 0:
+                print("Button pressed {}".format(key))
 
-        # Copy overview
-        over = overview.copy()
-        # Draw rectangles on overview based on how many immune cells are present
-        for i in range(len(iterations)):
-            rec_x,rec_y = iterations[i]
-            color = it_colors[i]
-            cv.rectangle(over, (int((rec_x-minx)/overview_factor),int((rec_y-miny)/overview_factor)), (int(((rec_x-minx)+1024)/overview_factor) - 1, int(((rec_y-miny)+1024)/overview_factor) - 1), color)
-        # Draw rectangle on overview based on current segment
-        cv.rectangle(over, (int((x-minx)/overview_factor),int((y-miny)/overview_factor)), (int(((x-minx)+1024)/overview_factor), int(((y-miny)+1024)/overview_factor)), (0,255,0))
-        # Show original image
-        cv.imshow("Original", np.array(img))
-        # Show immune cells on original image
-        cv.imshow("Detected immunocells", cvimg2)
-        # Show overview
-        cv.imshow("Overview", over)
+    def load_image(self):
+        return osli.OpenSlide(self.conf.options.input)
 
-        # Event loop
-        key = cv.waitKey(100)
-        # Check for key presses
-        if key == 27:
-            return
-        elif key == 49:
-            going_forward = False
-            auto_forward = True
-            try:
-                current_iter = move(current_iter, going_forward)
-            except:
-                return
-        elif key == 50:
-            going_forward = True
-            auto_forward = True
-            try:
-                current_iter = move(current_iter, going_forward)
-            except:
-                return
-        elif key >= 0:
-            print("Button pressed {}".format(key))
+    def create_mask_window(self):
+        cv.namedWindow('Mask')
+        cv.createTrackbar('Min hue',  'Mask', self.conf.options.hue_min, 190, partial(self.conf.update_configuration, "hue_min"))
+        cv.createTrackbar('Min sat',  'Mask', self.conf.options.sat_min, 255, partial(self.conf.update_configuration, "sat_min"))
+        cv.createTrackbar('Min val',  'Mask', self.conf.options.val_min, 255, partial(self.conf.update_configuration, "val_min"))
+        cv.createTrackbar('Max hue',  'Mask', self.conf.options.hue_max, 190, partial(self.conf.update_configuration, "hue_max"))
+        cv.createTrackbar('Max sat',  'Mask', self.conf.options.sat_max, 255, partial(self.conf.update_configuration, "sat_max"))
+        cv.createTrackbar('Max val',  'Mask', self.conf.options.val_max, 255, partial(self.conf.update_configuration, "val_max"))
+        cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 1000, partial(self.conf.update_configuration, "area_min"))
+        cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 1000, partial(self.conf.update_configuration, "area_max"))
+        cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(self.conf.update_configuration, "circularity"))
+        
 
-
-# Start the analysis
-performit(minx, miny, sizex, sizey, slide)
-
+m = Main()
+m.mainloop()
+        
 # Close image file
-slide.close()
+m.slide.close()
 
 # Close all windows
 cv.destroyAllWindows()
