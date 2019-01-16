@@ -1,5 +1,5 @@
 from math import pi
-from functools import partial
+from functools import partial, lru_cache
 import argparse
 
 import openslide as osli
@@ -24,8 +24,9 @@ class Configuration:
         parser.add_argument('--val_max', type=int, default=70)
         parser.add_argument('--area_min', type=int, default=200)
         parser.add_argument('--area_max', type=int, default=1500)
-        parser.add_argument('--circularity', type=float, default=0.5)
+        parser.add_argument('--circularity', type=int, default=50)
         parser.add_argument('--input', required=True)
+        parser.add_argument('--size', type=int, default=1024)
         return parser.parse_args()
 
     def update_configuration(self, name, value):
@@ -38,11 +39,13 @@ class Main:
         self.slide = self.load_image()
         self.iterations, self.it_colors = self.make_iterations()
         self.overview_factor, self.overview = self.generate_overview()
+        self.create_mask_window()
 
         self.auto_forward = True
         self.move_steps = 1
 
         self.current_iter = 0
+        self.current_printed = False
 
     def make_iterations(self):
         iterations = []
@@ -52,8 +55,8 @@ class Main:
         miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
         sizey = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
         sizex = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
-        for y in range(miny, miny+sizey, 1024):
-            for x in range(minx, minx+sizex, 1024):
+        for y in range(miny, miny+sizey, self.conf.options.size):
+            for x in range(minx, minx+sizex, self.conf.options.size):
                 iterations.append((x,y))
                 it_colors.append((0,0,0))
         return iterations, it_colors
@@ -63,6 +66,7 @@ class Main:
         if move_to < 0 or move_to > len(self.iterations):
             print("Tried to move to {}".format(move_to))
             raise IndexError("Reached end of slide set")
+        self.current_printed = False
         return move_to
 
     def auto_move(self):
@@ -77,18 +81,18 @@ class Main:
     def generate_overview(self):
         minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
         miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
-        region = self.slide.read_region((minx, miny), 7, (1024,1024)).convert('RGB')
+        region = self.slide.read_region((minx, miny), 7, (self.conf.options.size,self.conf.options.size)).convert('RGB')
         overview = cv.cvtColor(np.array(region), cv.COLOR_RGB2BGR)
         overview_factor = self.slide.level_downsamples[7]
         return overview_factor, overview
         
-
+    @lru_cache(50)
     def get_region(self, iteration, size):
         coords = self.iterations[iteration]
         return self.slide.read_region(coords,0,(size,size)).convert('RGB')
 
     def get_immune_cells(self, segment):
-        hsvimg = cv.cvtColor(np.array(segment), cv.COLOR_RGB2HSV)
+        hsvimg = cv.cvtColor(segment, cv.COLOR_RGB2HSV)
         # Blur the image
         hsvimg = cv.bilateralFilter(hsvimg,5,75,75)
         # Generate mask based on HSV values
@@ -107,7 +111,7 @@ class Main:
             if perimiter == 0:
                 continue
             circularity = 4*pi*(area/(perimiter**2))
-            if self.conf.options.area_min < area < self.conf.options.area_max and circularity > self.conf.options.circularity:
+            if self.conf.options.area_min < area < self.conf.options.area_max and circularity*100 > self.conf.options.circularity:
                 immune_cells.append(con)
         return immune_cells, mask
         
@@ -121,8 +125,8 @@ class Main:
             return (ret_x, ret_y)
         
         def max_overview(x, y):
-            ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])) + 1024 / self.overview_factor) - 1
-            ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])) + 1024 / self.overview_factor) - 1
+            ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X]) + self.conf.options.size) / self.overview_factor) - 1
+            ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y]) + self.conf.options.size) / self.overview_factor) - 1
             return (ret_x, ret_y)
 
         # Draw rectangles on overview based on how many immune cells are present
@@ -137,12 +141,12 @@ class Main:
 
     def mainloop(self):
         while True:
-            img = self.get_region(self.current_iter, 1024)
-            # Optimization to discard blank images
+            img = self.get_region(self.current_iter, self.conf.options.size)
             if(img.getbbox() == None):
                 self.auto_move()
+                continue
 
-            # Convert from BGR to HSV
+            img = np.array(img)
             immune_cells, mask = self.get_immune_cells(img)
 
             # Skip forward to next image if no immune cells were found
@@ -150,19 +154,19 @@ class Main:
                 self.auto_move()
                 continue
             else:
-                # Print the number of immune cells
-                print("Immune cells in image: {}".format(len(immune_cells)))
-                # Set color on overview
+                if not self.current_printed:
+                    print("Immune cells in image: {}".format(len(immune_cells)))
+                    self.current_printed = True
                 self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
             # Show mask
             cv.imshow("Mask", mask)
             # Original image with immune cells outlined
-            cvimg2 = np.array(img).copy()
+            cvimg2 = img.copy()
             cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
             over = self.draw_overview_overlay()
 
             # Show original image
-            cv.imshow("Original", np.array(img))
+            cv.imshow("Original", img)
             # Show immune cells on original image
             cv.imshow("Detected immunocells", cvimg2)
             # Show overview
@@ -174,14 +178,14 @@ class Main:
             if key == 27:
                 return
             elif key == 49:
-                self.going_forward = False
+                self.move_steps = -1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
             elif key == 50:
-                self.going_forward = True
+                self.move_steps = 1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
