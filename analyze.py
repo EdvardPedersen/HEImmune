@@ -1,6 +1,7 @@
 from math import pi
 from functools import partial, lru_cache
 import argparse
+from copy import deepcopy
 
 import openslide as osli
 import cv2 as cv
@@ -16,15 +17,15 @@ class Configuration:
     
     def _cmd_line_args(self):
         parser = argparse.ArgumentParser()
-        parser.add_argument('--hue_min', type=int, default=0)
+        parser.add_argument('--hue_min', type=int, default=120)
         parser.add_argument('--sat_min', type=int, default=0)
-        parser.add_argument('--val_min', type=int, default=10)
+        parser.add_argument('--val_min', type=int, default=60)
         parser.add_argument('--hue_max', type=int, default=140)
         parser.add_argument('--sat_max', type=int, default=255)
-        parser.add_argument('--val_max', type=int, default=70)
+        parser.add_argument('--val_max', type=int, default=110)
         parser.add_argument('--area_min', type=int, default=200)
-        parser.add_argument('--area_max', type=int, default=1500)
-        parser.add_argument('--circularity', type=int, default=50)
+        parser.add_argument('--area_max', type=int, default=4000)
+        parser.add_argument('--circularity', type=int, default=40)
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=1024)
         return parser.parse_args()
@@ -93,18 +94,15 @@ class Main:
 
     def get_immune_cells(self, segment):
         hsvimg = cv.cvtColor(segment, cv.COLOR_RGB2HSV)
-        # Blur the image
-        hsvimg = cv.bilateralFilter(hsvimg,5,75,75)
-        # Generate mask based on HSV values
+        hsvimg = cv.bilateralFilter(hsvimg,5,150,150)
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
         hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
         mask = cv.inRange(hsvimg, hueLow, hueHigh)
-        # Contours based on mask
+        kernel = np.ones((3,3), np.uint8)
+        mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=2)
         contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
         
-        # List of immune cells
         immune_cells = []
-        # Generate immune cell candidates based on circularity and area
         for con in contours:
             area = cv.contourArea(con)
             perimiter = cv.arcLength(con, True)
@@ -205,8 +203,8 @@ class Main:
         cv.createTrackbar('Max hue',  'Mask', self.conf.options.hue_max, 190, partial(self.conf.update_configuration, "hue_max"))
         cv.createTrackbar('Max sat',  'Mask', self.conf.options.sat_max, 255, partial(self.conf.update_configuration, "sat_max"))
         cv.createTrackbar('Max val',  'Mask', self.conf.options.val_max, 255, partial(self.conf.update_configuration, "val_max"))
-        cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 1000, partial(self.conf.update_configuration, "area_min"))
-        cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 1000, partial(self.conf.update_configuration, "area_max"))
+        cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 5000, partial(self.conf.update_configuration, "area_min"))
+        cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 5000, partial(self.conf.update_configuration, "area_max"))
         cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(self.conf.update_configuration, "circularity"))
         
 
