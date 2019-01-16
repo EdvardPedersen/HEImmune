@@ -147,7 +147,6 @@ class Main:
             img = np.array(img)
             immune_cells, mask = self.get_immune_cells(img)
 
-            # Skip forward to next image if no immune cells were found
             if len(immune_cells) == 0:
                 self.auto_move()
                 continue
@@ -156,23 +155,16 @@ class Main:
                     print("Immune cells in image: {}".format(len(immune_cells)))
                     self.current_printed = True
                 self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
-            # Show mask
-            cv.imshow("Mask", mask)
-            # Original image with immune cells outlined
             cvimg2 = img.copy()
             cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
             over = self.draw_overview_overlay()
 
-            # Show original image
+            cv.imshow("Mask", mask)
             cv.imshow("Original", img)
-            # Show immune cells on original image
             cv.imshow("Detected immunocells", cvimg2)
-            # Show overview
             cv.imshow("Overview", over)
 
-            # Event loop
             key = cv.waitKey(100)
-            # Check for key presses
             if key == 27:
                 return
             elif key == 49:
