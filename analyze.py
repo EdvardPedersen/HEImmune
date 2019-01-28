@@ -14,7 +14,7 @@ import numpy as np
 class Configuration:
     def __init__(self):
         self.options = self._cmd_line_args()
-    
+
     def _cmd_line_args(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--hue_min', type=int, default=120)
@@ -28,6 +28,7 @@ class Configuration:
         parser.add_argument('--circularity', type=int, default=40)
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=1024)
+        parser.add_argument('--window_size', type=int, default=1024)
         return parser.parse_args()
 
     def update_configuration(self, name, value):
@@ -38,6 +39,7 @@ class Main:
     def __init__(self):
         self.conf = Configuration()
         self.slide = self.load_image()
+        self.initialize_windows()
         self.iterations, self.it_colors = self.make_iterations()
         self.overview_factor, self.overview = self.generate_overview()
         self.create_mask_window()
@@ -47,6 +49,24 @@ class Main:
 
         self.current_iter = 0
         self.current_printed = False
+
+
+    def initialize_windows(self):
+        self.overview_window = "Overview"
+        self.mask_window = "Mask"
+        self.original_window = "Original"
+        self.immunocells_window = "Detected immunocells"
+
+        window_size = self.conf.options.window_size
+
+        cv.namedWindow(self.overview_window, cv.WINDOW_NORMAL)
+        cv.namedWindow(self.mask_window, cv.WINDOW_NORMAL)
+        cv.namedWindow(self.original_window, cv.WINDOW_NORMAL)
+        cv.namedWindow(self.immunocells_window, cv.WINDOW_NORMAL)
+        cv.resizeWindow(self.overview_window, window_size, window_size)
+        cv.resizeWindow(self.mask_window, window_size, window_size)
+        cv.resizeWindow(self.original_window, window_size, window_size)
+        cv.resizeWindow(self.immunocells_window, window_size, window_size)
 
     def make_iterations(self):
         iterations = []
@@ -82,11 +102,11 @@ class Main:
     def generate_overview(self):
         minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
         miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
-        region = self.slide.read_region((minx, miny), 7, (self.conf.options.size,self.conf.options.size)).convert('RGB')
+        region = self.slide.read_region((minx, miny), 6, (self.conf.options.size,self.conf.options.size)).convert('RGB')
         overview = cv.cvtColor(np.array(region), cv.COLOR_RGB2BGR)
-        overview_factor = self.slide.level_downsamples[7]
+        overview_factor = self.slide.level_downsamples[6]
         return overview_factor, overview
-        
+
     @lru_cache(50)
     def get_region(self, iteration, size):
         coords = self.iterations[iteration]
@@ -101,7 +121,7 @@ class Main:
         kernel = np.ones((3,3), np.uint8)
         mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=2)
         contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-        
+
         immune_cells = []
         for con in contours:
             area = cv.contourArea(con)
@@ -112,16 +132,13 @@ class Main:
             if self.conf.options.area_min < area < self.conf.options.area_max and circularity*100 > self.conf.options.circularity:
                 immune_cells.append(con)
         return immune_cells, mask
-        
-    def draw_overview_overlay(self):
-        # Copy overview
-        over = self.overview.copy()
 
+    def draw_overview_overlay(self):
         def min_overview(x, y):
             ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])) / self.overview_factor)
             ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])) / self.overview_factor)
             return (ret_x, ret_y)
-        
+
         def max_overview(x, y):
             ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X]) + self.conf.options.size) / self.overview_factor) - 1
             ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y]) + self.conf.options.size) / self.overview_factor) - 1
@@ -130,12 +147,12 @@ class Main:
         # Draw rectangles on overview based on how many immune cells are present
         for iteration, color in zip(self.iterations, self.it_colors):
             rec_x,rec_y = iteration
-            cv.rectangle(over, min_overview(rec_x, rec_y), max_overview(rec_x, rec_y), color)
+            cv.rectangle(self.overview, min_overview(rec_x, rec_y), max_overview(rec_x, rec_y), color)
         # Draw rectangle on overview based on current segment
         current_x, current_y = self.iterations[self.current_iter]
-        cv.rectangle(over, min_overview(current_x, current_y), max_overview(current_x, current_y), (0,255,0))
-        return over
-        
+        cv.rectangle(self.overview, min_overview(current_x, current_y), max_overview(current_x, current_y), (0,255,0))
+        return self.overview
+
 
     def mainloop(self):
         while True:
@@ -147,7 +164,7 @@ class Main:
             img = np.array(img)
             immune_cells, mask = self.get_immune_cells(img)
 
-            if len(immune_cells) == 0:
+            if len(immune_cells) == 0 and self.auto_forward:
                 self.auto_move()
                 continue
             else:
@@ -159,10 +176,10 @@ class Main:
             cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
             over = self.draw_overview_overlay()
 
-            cv.imshow("Mask", mask)
-            cv.imshow("Original", img)
-            cv.imshow("Detected immunocells", cvimg2)
-            cv.imshow("Overview", over)
+            cv.imshow(self.mask_window, mask)
+            cv.imshow(self.original_window, img)
+            cv.imshow(self.immunocells_window, cvimg2)
+            cv.imshow(self.overview_window, over)
 
             key = cv.waitKey(100)
             if key == 27:
@@ -188,7 +205,6 @@ class Main:
         return osli.OpenSlide(self.conf.options.input)
 
     def create_mask_window(self):
-        cv.namedWindow('Mask')
         cv.createTrackbar('Min hue',  'Mask', self.conf.options.hue_min, 190, partial(self.conf.update_configuration, "hue_min"))
         cv.createTrackbar('Min sat',  'Mask', self.conf.options.sat_min, 255, partial(self.conf.update_configuration, "sat_min"))
         cv.createTrackbar('Min val',  'Mask', self.conf.options.val_min, 255, partial(self.conf.update_configuration, "val_min"))
@@ -198,11 +214,11 @@ class Main:
         cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 5000, partial(self.conf.update_configuration, "area_min"))
         cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 5000, partial(self.conf.update_configuration, "area_max"))
         cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(self.conf.update_configuration, "circularity"))
-        
+
 
 m = Main()
 m.mainloop()
-        
+
 # Close image file
 m.slide.close()
 
