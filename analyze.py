@@ -7,10 +7,6 @@ import openslide as osli
 import cv2 as cv
 import numpy as np
 
-# Open file with openslide
-
-# Configuration - from slide
-
 class Configuration:
     def __init__(self):
         self.options = self._cmd_line_args()
@@ -29,9 +25,13 @@ class Configuration:
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=1024)
         parser.add_argument('--window_size', type=int, default=1024)
+        parser.add_argument('--overview_downsample', type=int, default=5)
+        parser.add_argument('--selection', type=bool, default=False)
         return parser.parse_args()
 
-    def update_configuration(self, name, value):
+    def update_configuration(self, printer, name, value):
+        printer.auto_forward = False
+        printer.current_printed = False
         options = vars(self.options)
         options[name] = value
 
@@ -41,7 +41,8 @@ class Main:
         self.slide = self.load_image()
         self.initialize_windows()
         self.iterations, self.it_colors = self.make_iterations()
-        self.overview_factor, self.overview = self.generate_overview()
+        self.overview_factor, self.original_overview = self.generate_overview()
+        self.overview = self.original_overview.copy()
         self.create_mask_window()
 
         self.auto_forward = True
@@ -49,6 +50,10 @@ class Main:
 
         self.current_iter = 0
         self.current_printed = False
+
+        self.drawing = False
+        self.draw_points = []
+        self.update_overview = True
 
 
     def initialize_windows(self):
@@ -67,6 +72,7 @@ class Main:
         cv.resizeWindow(self.mask_window, window_size, window_size)
         cv.resizeWindow(self.original_window, window_size, window_size)
         cv.resizeWindow(self.immunocells_window, window_size, window_size)
+        cv.setMouseCallback(self.overview_window, self.mouse_draw_overview)
 
     def make_iterations(self):
         iterations = []
@@ -88,6 +94,7 @@ class Main:
             print("Tried to move to {}".format(move_to))
             raise IndexError("Reached end of slide set")
         self.current_printed = False
+        self.update_overview = True
         return move_to
 
     def auto_move(self):
@@ -99,13 +106,21 @@ class Main:
                 print(e)
                 exit()
 
+    def mouse_draw_overview(self, event, x, y, flags, param):
+        if event == cv.EVENT_MOUSEMOVE and self.drawing:
+            self.draw_points.append([x, y])
+            print("Added point")
+
     def generate_overview(self):
         minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
         miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
-        region = self.slide.read_region((minx, miny), 6, (self.conf.options.size,self.conf.options.size)).convert('RGB')
+        level = self.conf.options.overview_downsample
+        factor = self.slide.level_downsamples[level]
+        width = int(float(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH]) / factor)
+        height = int(float(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT]) / factor)
+        region = self.slide.read_region((minx, miny), level, (width,height)).convert('RGB')
         overview = cv.cvtColor(np.array(region), cv.COLOR_RGB2BGR)
-        overview_factor = self.slide.level_downsamples[6]
-        return overview_factor, overview
+        return factor, overview
 
     @lru_cache(50)
     def get_region(self, iteration, size):
@@ -134,6 +149,9 @@ class Main:
         return immune_cells, mask
 
     def draw_overview_overlay(self):
+        if not self.update_overview:
+            return self.overview
+        self.update_overview = False
         def min_overview(x, y):
             ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])) / self.overview_factor)
             ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])) / self.overview_factor)
@@ -151,53 +169,70 @@ class Main:
         # Draw rectangle on overview based on current segment
         current_x, current_y = self.iterations[self.current_iter]
         cv.rectangle(self.overview, min_overview(current_x, current_y), max_overview(current_x, current_y), (0,255,0))
+        if not self.drawing and len(self.draw_points) > 4:
+            contours = np.array(self.draw_points).reshape((-1,1,2)).astype(np.int32)
+            cv.drawContours(self.overview, [contours],0,(255,255,255),1)
         return self.overview
 
 
     def mainloop(self):
         while True:
-            img = self.get_region(self.current_iter, self.conf.options.size)
-            if(img.getbbox() == None):
-                self.auto_move()
-                continue
+            if not self.current_printed:
+                img = self.get_region(self.current_iter, self.conf.options.size)
+                if(img.getbbox() == None):
+                    self.auto_move()
+                    continue
 
-            img = np.array(img)
-            immune_cells, mask = self.get_immune_cells(img)
+                img = np.array(img)
+                immune_cells, mask = self.get_immune_cells(img)
 
-            if len(immune_cells) == 0 and self.auto_forward:
-                self.auto_move()
-                continue
-            else:
-                if not self.current_printed:
-                    print("Immune cells in image: {}".format(len(immune_cells)))
-                    self.current_printed = True
-                self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
-            cvimg2 = img.copy()
-            cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+                if len(immune_cells) == 0 and self.auto_forward:
+                    self.auto_move()
+                    continue
+                else:
+                    if not self.current_printed:
+                        print("Immune cells in image: {}".format(len(immune_cells)))
+                        self.current_printed = True
+                    self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
+                cvimg2 = img.copy()
+                cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+
+                cv.imshow(self.mask_window, mask)
+                cv.imshow(self.original_window, img)
+                cv.imshow(self.immunocells_window, cvimg2)
+
             over = self.draw_overview_overlay()
-
-            cv.imshow(self.mask_window, mask)
-            cv.imshow(self.original_window, img)
-            cv.imshow(self.immunocells_window, cvimg2)
             cv.imshow(self.overview_window, over)
 
             key = cv.waitKey(100)
-            if key == 27:
+            if key == 27: # ESC
                 return
-            elif key == 49:
+            elif key == 49: # 1
                 self.move_steps = -1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
-            elif key == 50:
+            elif key == 50: # 2
                 self.move_steps = 1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
+            elif key == 46: # .
+                self.current_printed = False
+                if self.drawing:
+                    self.update_overview = True
+                    print("Stopped drawing")
+                    self.drawing = False
+                else:
+                    self.update_overview = True
+                    self.overview = self.original_overview.copy()
+                    print("Started drawing")
+                    self.drawing = True
+                    self.draw_points = []
             elif key >= 0:
                 print("Button pressed {}".format(key))
 
@@ -205,15 +240,16 @@ class Main:
         return osli.OpenSlide(self.conf.options.input)
 
     def create_mask_window(self):
-        cv.createTrackbar('Min hue',  'Mask', self.conf.options.hue_min, 190, partial(self.conf.update_configuration, "hue_min"))
-        cv.createTrackbar('Min sat',  'Mask', self.conf.options.sat_min, 255, partial(self.conf.update_configuration, "sat_min"))
-        cv.createTrackbar('Min val',  'Mask', self.conf.options.val_min, 255, partial(self.conf.update_configuration, "val_min"))
-        cv.createTrackbar('Max hue',  'Mask', self.conf.options.hue_max, 190, partial(self.conf.update_configuration, "hue_max"))
-        cv.createTrackbar('Max sat',  'Mask', self.conf.options.sat_max, 255, partial(self.conf.update_configuration, "sat_max"))
-        cv.createTrackbar('Max val',  'Mask', self.conf.options.val_max, 255, partial(self.conf.update_configuration, "val_max"))
-        cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 5000, partial(self.conf.update_configuration, "area_min"))
-        cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 5000, partial(self.conf.update_configuration, "area_max"))
-        cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(self.conf.update_configuration, "circularity"))
+        update = partial(self.conf.update_configuration, self)
+        cv.createTrackbar('Min hue',  'Mask', self.conf.options.hue_min, 190, partial(update, "hue_min"))
+        cv.createTrackbar('Min sat',  'Mask', self.conf.options.sat_min, 255, partial(update, "sat_min"))
+        cv.createTrackbar('Min val',  'Mask', self.conf.options.val_min, 255, partial(update, "val_min"))
+        cv.createTrackbar('Max hue',  'Mask', self.conf.options.hue_max, 190, partial(update, "hue_max"))
+        cv.createTrackbar('Max sat',  'Mask', self.conf.options.sat_max, 255, partial(update, "sat_max"))
+        cv.createTrackbar('Max val',  'Mask', self.conf.options.val_max, 255, partial(update, "val_max"))
+        cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 5000, partial(update, "area_min"))
+        cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 5000, partial(update, "area_max"))
+        cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(update, "circularity"))
 
 
 m = Main()
