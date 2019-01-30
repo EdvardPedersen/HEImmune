@@ -26,7 +26,7 @@ class Configuration:
         parser.add_argument('--size', type=int, default=1024)
         parser.add_argument('--window_size', type=int, default=1024)
         parser.add_argument('--overview_downsample', type=int, default=5)
-        parser.add_argument('--selection', type=bool, default=False)
+        parser.add_argument('--selection', action="store_true")
         return parser.parse_args()
 
     def update_configuration(self, printer, name, value):
@@ -192,7 +192,6 @@ class Main:
                     selection = True
                 img = self.get_region(self.current_iter, self.conf.options.size)
                 if(img.getbbox() == None and self.auto_forward):
-                    print("Empty image")
                     self.auto_move()
                     continue
 
@@ -212,7 +211,6 @@ class Main:
                     immune_cells = inside_cells
 
                 if len(immune_cells) == 0 and self.auto_forward and not selection:
-                    print("Skipping")
                     self.auto_move()
                     continue
                 else:
@@ -265,9 +263,8 @@ class Main:
                     print("Stopped drawing")
                     self.drawing = False
                     self.selected_regions = self.get_selected_regions(self.draw_points)
-                else:
-                    self.update_overview = True
                     self.overview = self.original_overview.copy()
+                else:
                     print("Started drawing")
                     self.drawing = True
                     self.draw_points = []
