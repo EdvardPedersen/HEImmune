@@ -46,6 +46,8 @@ class Main:
         self.create_mask_window()
 
         self.auto_forward = True
+        if self.conf.options.selection:
+            self.auto_forward = False
         self.move_steps = 1
 
         self.current_iter = 0
@@ -53,7 +55,11 @@ class Main:
 
         self.drawing = False
         self.draw_points = []
+        self.overview_draw_points = []
         self.update_overview = True
+        self.selection_start = False
+        self.selected_regions = []
+        self.total_selection = 0
 
 
     def initialize_windows(self):
@@ -108,8 +114,10 @@ class Main:
 
     def mouse_draw_overview(self, event, x, y, flags, param):
         if event == cv.EVENT_MOUSEMOVE and self.drawing:
-            self.draw_points.append([x, y])
-            print("Added point")
+            real_x = int((x * self.overview_factor) + int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X]))
+            real_y = int((y * self.overview_factor) + int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y]))
+            self.draw_points.append([real_x, real_y])
+            self.overview_draw_points.append([x,y])
 
     def generate_overview(self):
         minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
@@ -169,33 +177,62 @@ class Main:
         # Draw rectangle on overview based on current segment
         current_x, current_y = self.iterations[self.current_iter]
         cv.rectangle(self.overview, min_overview(current_x, current_y), max_overview(current_x, current_y), (0,255,0))
-        if not self.drawing and len(self.draw_points) > 4:
-            contours = np.array(self.draw_points).reshape((-1,1,2)).astype(np.int32)
-            cv.drawContours(self.overview, [contours],0,(255,255,255),1)
+        if not self.drawing and len(self.overview_draw_points) > 4:
+            contours = np.array(self.overview_draw_points).reshape((-1,1,2)).astype(np.int32)
+            cv.drawContours(self.overview, [contours],0,(255,255,255),2)
         return self.overview
 
 
     def mainloop(self):
         while True:
             if not self.current_printed:
+                selection = False
+                if len(self.selected_regions) > 0:
+                    self.current_iter = self.iterations.index(self.selected_regions.pop())
+                    selection = True
                 img = self.get_region(self.current_iter, self.conf.options.size)
-                if(img.getbbox() == None):
+                if(img.getbbox() == None and self.auto_forward):
+                    print("Empty image")
                     self.auto_move()
                     continue
 
                 img = np.array(img)
                 immune_cells, mask = self.get_immune_cells(img)
+                inside_cells = []
+                if selection:
+                    contour = np.array(self.draw_points).reshape((-1,1,2)).astype(np.int32)
+                    for cell in immune_cells:
+                        moment = cv.moments(cell)
+                        center_x = int(moment['m10']/moment['m00'])
+                        center_y = int(moment['m01']/moment['m00'])
+                        real_x = center_x + self.iterations[self.current_iter][0]
+                        real_y = center_y + self.iterations[self.current_iter][1]
+                        if cv.pointPolygonTest(contour, (real_x, real_y), False) >= 0:
+                            inside_cells.append(cell)
+                    immune_cells = inside_cells
 
-                if len(immune_cells) == 0 and self.auto_forward:
+                if len(immune_cells) == 0 and self.auto_forward and not selection:
+                    print("Skipping")
                     self.auto_move()
                     continue
                 else:
                     if not self.current_printed:
-                        print("Immune cells in image: {}".format(len(immune_cells)))
+                        if not selection:
+                            print("Immune cells in image: {}".format(len(immune_cells)))
+                        else:
+                            print("Immune cells in selection: {}".format(len(immune_cells)))
+                            self.total_selection += len(immune_cells)
+                            if len(self.selected_regions) == 0:
+                                print("Total for the selection: {}".format(self.total_selection))
+                                self.total_selection = 0
                         self.current_printed = True
                     self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
                 cvimg2 = img.copy()
                 cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+                if selection:
+                    updated_list = [[p[0] - self.iterations[self.current_iter][0], p[1] - self.iterations[self.current_iter][1]] for p in self.draw_points]
+                    updated_contour = np.array(updated_list).reshape((-1,1,2)).astype(np.int32)
+                    cv.drawContours(cvimg2, [updated_contour], 0, (255,255,255), 4)
 
                 cv.imshow(self.mask_window, mask)
                 cv.imshow(self.original_window, img)
@@ -227,14 +264,40 @@ class Main:
                     self.update_overview = True
                     print("Stopped drawing")
                     self.drawing = False
+                    self.selected_regions = self.get_selected_regions(self.draw_points)
                 else:
                     self.update_overview = True
                     self.overview = self.original_overview.copy()
                     print("Started drawing")
                     self.drawing = True
                     self.draw_points = []
+                    self.overview_draw_points = []
+                    self.selected_regions = []
             elif key >= 0:
                 print("Button pressed {}".format(key))
+
+    def get_selected_regions(self, points):
+        regions = []
+        contour = np.array(points).reshape((-1,1,2)).astype(np.int32)
+        for point in points:
+            for region in self.iterations:
+                if point[0] > region[0] and point[0] < region[0] + self.conf.options.size:
+                    if point[1] > region[1] and point[1] < region[1] + self.conf.options.size:
+                        regions.append(region)
+                        continue
+        for region in self.iterations:
+            max_x = region[0] + self.conf.options.size
+            max_y = region[1] + self.conf.options.size
+            hit = max([cv.pointPolygonTest(contour, (max_x, max_y), False),
+                       cv.pointPolygonTest(contour, region, False),
+                       cv.pointPolygonTest(contour, (max_x, region[1]), False),
+                       cv.pointPolygonTest(contour, (region[0], max_y), False)])
+            if hit >= 0:
+                regions.append(region)
+        regions_unique = list(set(regions))
+        regions_unique.sort(key=lambda x: x[0], reverse=True)
+        regions_unique.sort(key=lambda y: y[1], reverse=True)
+        return regions_unique
 
     def load_image(self):
         return osli.OpenSlide(self.conf.options.input)
