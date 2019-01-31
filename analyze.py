@@ -6,6 +6,9 @@ from copy import deepcopy
 import openslide as osli
 import cv2 as cv
 import numpy as np
+from skimage.color import rgb2hed
+from skimage import img_as_ubyte
+from skimage.exposure import rescale_intensity
 
 class Configuration:
     def __init__(self):
@@ -13,15 +16,15 @@ class Configuration:
 
     def _cmd_line_args(self):
         parser = argparse.ArgumentParser()
-        parser.add_argument('--hue_min', type=int, default=120)
+        parser.add_argument('--hue_min', type=int, default=100)
+        parser.add_argument('--hue_max', type=int, default=255)
         parser.add_argument('--sat_min', type=int, default=0)
-        parser.add_argument('--val_min', type=int, default=60)
-        parser.add_argument('--hue_max', type=int, default=140)
-        parser.add_argument('--sat_max', type=int, default=255)
-        parser.add_argument('--val_max', type=int, default=110)
-        parser.add_argument('--area_min', type=int, default=200)
-        parser.add_argument('--area_max', type=int, default=4000)
-        parser.add_argument('--circularity', type=int, default=40)
+        parser.add_argument('--sat_max', type=int, default=100)
+        parser.add_argument('--val_min', type=int, default=0)
+        parser.add_argument('--val_max', type=int, default=255)
+        parser.add_argument('--area_min', type=int, default=150)
+        parser.add_argument('--area_max', type=int, default=2000)
+        parser.add_argument('--circularity', type=int, default=65)
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=1024)
         parser.add_argument('--window_size', type=int, default=1024)
@@ -136,11 +139,15 @@ class Main:
         return self.slide.read_region(coords,0,(size,size)).convert('RGB')
 
     def get_immune_cells(self, segment):
-        hsvimg = cv.cvtColor(segment, cv.COLOR_RGB2HSV)
-        hsvimg = cv.bilateralFilter(hsvimg,5,150,150)
+        hedimg = rgb2hed(segment)
+        hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
+        hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
+        hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
+        hsvimg = img_as_ubyte(hedimg)
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
         hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
-        mask = cv.inRange(hsvimg, hueLow, hueHigh)
+        cv.imshow("Hematoxylin-Eosin-DAB", hsvimg)
+        mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
         kernel = np.ones((3,3), np.uint8)
         mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=2)
         contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
@@ -187,7 +194,7 @@ class Main:
         while True:
             if not self.current_printed:
                 selection = False
-                if len(self.selected_regions) > 0:
+                if len(self.selected_regions) > 0 and self.update_overview:
                     self.current_iter = self.iterations.index(self.selected_regions.pop())
                     selection = True
                 img = self.get_region(self.current_iter, self.conf.options.size)
@@ -225,7 +232,7 @@ class Main:
                                 self.total_selection = 0
                         self.current_printed = True
                     self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
-                cvimg2 = img.copy()
+                cvimg2 = cv.cvtColor(img.copy(), cv.COLOR_RGB2BGR)
                 cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
                 if selection:
                     updated_list = [[p[0] - self.iterations[self.current_iter][0], p[1] - self.iterations[self.current_iter][1]] for p in self.draw_points]
@@ -301,12 +308,12 @@ class Main:
 
     def create_mask_window(self):
         update = partial(self.conf.update_configuration, self)
-        cv.createTrackbar('Min hue',  'Mask', self.conf.options.hue_min, 190, partial(update, "hue_min"))
-        cv.createTrackbar('Min sat',  'Mask', self.conf.options.sat_min, 255, partial(update, "sat_min"))
-        cv.createTrackbar('Min val',  'Mask', self.conf.options.val_min, 255, partial(update, "val_min"))
-        cv.createTrackbar('Max hue',  'Mask', self.conf.options.hue_max, 190, partial(update, "hue_max"))
-        cv.createTrackbar('Max sat',  'Mask', self.conf.options.sat_max, 255, partial(update, "sat_max"))
-        cv.createTrackbar('Max val',  'Mask', self.conf.options.val_max, 255, partial(update, "val_max"))
+        cv.createTrackbar('Min hematoxylin',  'Mask', self.conf.options.hue_min, 255, partial(update, "hue_min"))
+        cv.createTrackbar('Max hematoxylin',  'Mask', self.conf.options.hue_max, 255, partial(update, "hue_max"))
+        cv.createTrackbar('Min eosin',  'Mask', self.conf.options.sat_min, 255, partial(update, "sat_min"))
+        cv.createTrackbar('Max eosin',  'Mask', self.conf.options.sat_max, 255, partial(update, "sat_max"))
+        cv.createTrackbar('Min DAB',  'Mask', self.conf.options.val_min, 255, partial(update, "val_min"))
+        cv.createTrackbar('Max DAB',  'Mask', self.conf.options.val_max, 255, partial(update, "val_max"))
         cv.createTrackbar('Min area', 'Mask', self.conf.options.area_min, 5000, partial(update, "area_min"))
         cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 5000, partial(update, "area_max"))
         cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(update, "circularity"))
