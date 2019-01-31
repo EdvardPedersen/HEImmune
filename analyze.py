@@ -19,12 +19,12 @@ class Configuration:
         parser.add_argument('--hue_min', type=int, default=100)
         parser.add_argument('--hue_max', type=int, default=255)
         parser.add_argument('--sat_min', type=int, default=0)
-        parser.add_argument('--sat_max', type=int, default=100)
+        parser.add_argument('--sat_max', type=int, default=80)
         parser.add_argument('--val_min', type=int, default=0)
         parser.add_argument('--val_max', type=int, default=255)
         parser.add_argument('--area_min', type=int, default=150)
         parser.add_argument('--area_max', type=int, default=2000)
-        parser.add_argument('--circularity', type=int, default=65)
+        parser.add_argument('--circularity', type=int, default=75)
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=1024)
         parser.add_argument('--window_size', type=int, default=1024)
@@ -70,6 +70,7 @@ class Main:
         self.mask_window = "Mask"
         self.original_window = "Original"
         self.immunocells_window = "Detected immunocells"
+        self.hed_window = "Hematoxylin-Eosin-DAB"
 
         window_size = self.conf.options.window_size
 
@@ -77,7 +78,9 @@ class Main:
         cv.namedWindow(self.mask_window, cv.WINDOW_NORMAL)
         cv.namedWindow(self.original_window, cv.WINDOW_NORMAL)
         cv.namedWindow(self.immunocells_window, cv.WINDOW_NORMAL)
+        cv.namedWindow(self.hed_window, cv.WINDOW_NORMAL)
         cv.resizeWindow(self.overview_window, window_size, window_size)
+        cv.resizeWindow(self.hed_window, window_size, window_size)
         cv.resizeWindow(self.mask_window, window_size, window_size)
         cv.resizeWindow(self.original_window, window_size, window_size)
         cv.resizeWindow(self.immunocells_window, window_size, window_size)
@@ -144,9 +147,11 @@ class Main:
         hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
         hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
         hsvimg = img_as_ubyte(hedimg)
+        hsvimg = cv.bilateralFilter(hsvimg, 5, 150, 30)
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
         hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
-        cv.imshow("Hematoxylin-Eosin-DAB", hsvimg)
+        cv.imshow(self.hed_window, hsvimg)
+
         mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
         kernel = np.ones((3,3), np.uint8)
         mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=2)
