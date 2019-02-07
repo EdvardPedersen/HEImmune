@@ -26,7 +26,7 @@ class Configuration:
         parser.add_argument('--area_max', type=int, default=2000)
         parser.add_argument('--circularity', type=int, default=75)
         parser.add_argument('--input', required=True)
-        parser.add_argument('--size', type=int, default=1024)
+        parser.add_argument('--size', type=int, default=2048)
         parser.add_argument('--window_size', type=int, default=1024)
         parser.add_argument('--overview_downsample', type=int, default=5)
         parser.add_argument('--selection', action="store_true")
