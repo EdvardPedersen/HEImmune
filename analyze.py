@@ -10,6 +10,12 @@ from skimage.color import rgb2hed
 from skimage import img_as_ubyte
 from skimage.exposure import rescale_intensity
 
+KEY_RIGHT = 65363
+KEY_LEFT = 65361
+KEY_SPACE = 32
+KEY_ESC = 27
+
+
 class Configuration:
     def __init__(self):
         self.options = self._cmd_line_args()
@@ -30,6 +36,7 @@ class Configuration:
         parser.add_argument('--window_size', type=int, default=1024)
         parser.add_argument('--overview_downsample', type=int, default=4)
         parser.add_argument('--selection', action="store_true")
+        parser.add_argument('--advanced', action="store_true")
         return parser.parse_args()
 
     def update_configuration(self, printer, name, value):
@@ -63,6 +70,8 @@ class Main:
         self.selection_start = False
         self.selected_regions = []
         self.total_selection = 0
+        self.current_immune_cells = 0
+        self.output_selection = 0
 
 
     def initialize_windows(self):
@@ -75,16 +84,18 @@ class Main:
         window_size = self.conf.options.window_size
 
         cv.namedWindow(self.overview_window, cv.WINDOW_NORMAL)
-        cv.namedWindow(self.mask_window, cv.WINDOW_NORMAL)
-        cv.namedWindow(self.original_window, cv.WINDOW_NORMAL)
-        cv.namedWindow(self.immunocells_window, cv.WINDOW_NORMAL)
-        cv.namedWindow(self.hed_window, cv.WINDOW_NORMAL)
         cv.resizeWindow(self.overview_window, window_size, window_size)
-        cv.resizeWindow(self.hed_window, window_size, window_size)
-        cv.resizeWindow(self.mask_window, window_size, window_size)
-        cv.resizeWindow(self.original_window, window_size, window_size)
+        cv.namedWindow(self.immunocells_window, cv.WINDOW_NORMAL)
         cv.resizeWindow(self.immunocells_window, window_size, window_size)
         cv.setMouseCallback(self.overview_window, self.mouse_draw_overview)
+
+        if self.conf.options.advanced:
+            cv.namedWindow(self.mask_window, cv.WINDOW_NORMAL)
+            cv.namedWindow(self.original_window, cv.WINDOW_NORMAL)
+            cv.namedWindow(self.hed_window, cv.WINDOW_NORMAL)
+            cv.resizeWindow(self.hed_window, window_size, window_size)
+            cv.resizeWindow(self.mask_window, window_size, window_size)
+            cv.resizeWindow(self.original_window, window_size, window_size)
 
     def make_iterations(self):
         iterations = []
@@ -168,7 +179,8 @@ class Main:
 
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
         hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
-        cv.imshow(self.hed_window, hsvimg)
+        if self.conf.options.advanced:
+            cv.imshow(self.hed_window, hsvimg)
 
         # Generate mask
         mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
@@ -246,6 +258,7 @@ class Main:
                     continue
                 else:
                     if not self.current_printed:
+                        self.current_immune_cells = len(immune_cells)
                         if not selection:
                             print("Immune cells in image: {}".format(len(immune_cells)))
                         else:
@@ -253,6 +266,7 @@ class Main:
                             self.total_selection += len(immune_cells)
                             if len(self.selected_regions) == 0:
                                 print("Total for the selection: {}".format(self.total_selection))
+                                self.output_selection = self.total_selection
                                 self.total_selection = 0
                         self.current_printed = True
                     self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
@@ -264,33 +278,35 @@ class Main:
                     updated_contour = np.array(updated_list).reshape((-1,1,2)).astype(np.int32)
                     cv.drawContours(cvimg2, [updated_contour], 0, (255,255,255), 4)
 
-                cv.imshow(self.mask_window, mask)
-                cv.imshow(self.original_window, img)
+                if self.conf.options.advanced:
+                    cv.imshow(self.mask_window, mask)
+                    cv.imshow(self.original_window, img)
                 cv.imshow(self.immunocells_window, cvimg2)
 
             over = self.draw_overview_overlay()
             cv.imshow(self.overview_window, over)
+            cv.displayStatusBar(self.overview_window, "Immune cells in segment: {}  Immune cells in selection: {}".format(self.current_immune_cells, self.output_selection))
 
-            key = cv.waitKey(100)
-            if key == 27: # ESC
+            key = cv.waitKeyEx(100)
+            if key == KEY_ESC: # ESC
                 return
-            elif key == 49: # 1
+            elif key == KEY_LEFT: # 1
                 self.move_steps = -1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
-            elif key == 50: # 2
+            elif key == KEY_RIGHT: # 2
                 self.move_steps = 1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
-            elif key == 46: # .
-                self.current_printed = False
+            elif key == KEY_SPACE: # .
                 if self.drawing:
+                    self.current_printed = False
                     self.update_overview = True
                     print("Stopped drawing")
                     self.drawing = False
@@ -299,6 +315,7 @@ class Main:
                 else:
                     print("Started drawing")
                     self.drawing = True
+                    self.output_selection = 0
                     self.draw_points = []
                     self.overview_draw_points = []
                     self.selected_regions = []
