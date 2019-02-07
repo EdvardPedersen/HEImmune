@@ -175,36 +175,6 @@ class Main:
         kernel = np.ones((3,3), np.uint8)
         mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=5)
 
-        sure_bg = cv.dilate(mask, kernel, iterations=3)
-        dist_transform = cv.distanceTransform(mask, cv.DIST_L2, 3)
-        cv.normalize(dist_transform, dist_transform, 0, 1.0, cv.NORM_MINMAX)
-        contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-        for con in contours:
-            x, y, w, h = cv.boundingRect(con)
-            con_img = np.zeros_like(dist_transform[y:y+h, x:x+w])
-            cv.drawContours(con_img, [con], -1, 255, -1, offset=(-x,-y))
-            temp_img = dist_transform[y:y+h, x:x+w].copy()
-            temp_img[con_img==0] = 0
-            cv.normalize(temp_img, temp_img, 0, 1.0, cv.NORM_MINMAX)
-            cv.max(temp_img, dist_transform[y:y+h, x:x+w], dist_transform[y:y+h, x:x+w])
-        ret, sure_fg = cv.threshold(dist_transform, 0.7, 255, 0)
-        sure_fg = np.uint8(sure_fg)
-        unknown = cv.subtract(sure_bg, sure_fg)
-
-        cv.imshow("bg", sure_bg)
-        cv.imshow("fg", sure_fg)
-        cv.imshow("test", unknown)
-
-        ret, markers = cv.connectedComponents(sure_fg)
-        markers = markers + 1
-        markers[unknown==255] = 0
-        markers = cv.watershed(hsvimg, markers)
-        mask[markers == -1] = 0
-        print(markers)
-
-        cv.imshow("test2", mask)
-
-
         contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
         immune_cells = []
         for con in contours:
