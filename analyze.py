@@ -19,16 +19,16 @@ class Configuration:
         parser.add_argument('--hue_min', type=int, default=100)
         parser.add_argument('--hue_max', type=int, default=255)
         parser.add_argument('--sat_min', type=int, default=0)
-        parser.add_argument('--sat_max', type=int, default=80)
+        parser.add_argument('--sat_max', type=int, default=100)
         parser.add_argument('--val_min', type=int, default=0)
         parser.add_argument('--val_max', type=int, default=255)
         parser.add_argument('--area_min', type=int, default=150)
-        parser.add_argument('--area_max', type=int, default=2000)
+        parser.add_argument('--area_max', type=int, default=300)
         parser.add_argument('--circularity', type=int, default=75)
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=2048)
         parser.add_argument('--window_size', type=int, default=1024)
-        parser.add_argument('--overview_downsample', type=int, default=5)
+        parser.add_argument('--overview_downsample', type=int, default=4)
         parser.add_argument('--selection', action="store_true")
         return parser.parse_args()
 
@@ -148,15 +148,64 @@ class Main:
         hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
         hsvimg = img_as_ubyte(hedimg)
         hsvimg = cv.bilateralFilter(hsvimg, 5, 150, 30)
+
+        # Constants for k-means
+        criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        num_colors = 8
+
+        # Initial attempt at finding labels
+        fast_image = cv.resize(hsvimg, (int(hsvimg.shape[1] / 4), int(hsvimg.shape[0] / 4)))
+        fast_image = fast_image.reshape((-1,3))
+        fast_image = np.float32(fast_image)
+        _,label,_=cv.kmeans(fast_image, num_colors, None, criteria, 1, cv.KMEANS_RANDOM_CENTERS)
+
+        slow_image = hsvimg.reshape((-1,3))
+        slow_image = np.float32(slow_image)
+        ret,label,center=cv.kmeans(slow_image, num_colors, label, criteria, 1, cv.KMEANS_RANDOM_CENTERS)
+        center = np.uint8(center)
+        res = center[label.flatten()]
+        hsvimg = res.reshape((hsvimg.shape))
+
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
         hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
         cv.imshow(self.hed_window, hsvimg)
 
+        # Generate mask
         mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
         kernel = np.ones((3,3), np.uint8)
-        mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=2)
-        contours, hierarchy = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+        mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=5)
 
+        sure_bg = cv.dilate(mask, kernel, iterations=3)
+        dist_transform = cv.distanceTransform(mask, cv.DIST_L2, 3)
+        cv.normalize(dist_transform, dist_transform, 0, 1.0, cv.NORM_MINMAX)
+        contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        for con in contours:
+            x, y, w, h = cv.boundingRect(con)
+            con_img = np.zeros_like(dist_transform[y:y+h, x:x+w])
+            cv.drawContours(con_img, [con], -1, 255, -1, offset=(-x,-y))
+            temp_img = dist_transform[y:y+h, x:x+w].copy()
+            temp_img[con_img==0] = 0
+            cv.normalize(temp_img, temp_img, 0, 1.0, cv.NORM_MINMAX)
+            cv.max(temp_img, dist_transform[y:y+h, x:x+w], dist_transform[y:y+h, x:x+w])
+        ret, sure_fg = cv.threshold(dist_transform, 0.7, 255, 0)
+        sure_fg = np.uint8(sure_fg)
+        unknown = cv.subtract(sure_bg, sure_fg)
+
+        cv.imshow("bg", sure_bg)
+        cv.imshow("fg", sure_fg)
+        cv.imshow("test", unknown)
+
+        ret, markers = cv.connectedComponents(sure_fg)
+        markers = markers + 1
+        markers[unknown==255] = 0
+        markers = cv.watershed(hsvimg, markers)
+        mask[markers == -1] = 0
+        print(markers)
+
+        cv.imshow("test2", mask)
+
+
+        contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
         immune_cells = []
         for con in contours:
             area = cv.contourArea(con)
