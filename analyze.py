@@ -237,7 +237,8 @@ class Main:
                                 self.total_selection = 0
                         self.current_printed = True
                     self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
-                cvimg2 = cv.cvtColor(img.copy(), cv.COLOR_RGB2BGR)
+                img = cv.cvtColor(img, cv.COLOR_RGB2BGR)
+                cvimg2 = img.copy()
                 cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
                 if selection:
                     updated_list = [[p[0] - self.iterations[self.current_iter][0], p[1] - self.iterations[self.current_iter][1]] for p in self.draw_points]
