@@ -148,45 +148,78 @@ class Main:
         return factor, overview
 
     @lru_cache(50)
-    def get_region(self, iteration, size):
+    def get_region(self, iteration, size, level = 0):
         coords = self.iterations[iteration]
-        return self.slide.read_region(coords,0,(size,size)).convert('RGB')
+        real_size = int(size / self.slide.level_downsamples[level])
+        return self.slide.read_region(coords,level,(real_size,real_size)).convert('RGB')
 
-    def get_immune_cells(self, segment):
+    def get_immune_cells(self):
+        # Color limits
+        hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
+        hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
+
+        # First approximation at lower resolution
+        segment = self.get_region(self.current_iter, self.conf.options.size, level = 2)
         hedimg = rgb2hed(segment)
         hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
         hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
         hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
         hsvimg = img_as_ubyte(hedimg)
+        mask = cv.inRange((hsvimg), hueLow, hueHigh)
+        contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        if len(contours) < 10:
+            return [], mask
+
+        # Full resolution follows
         hsvimg = cv.bilateralFilter(hsvimg, 5, 150, 30)
+        segment = self.get_region(self.current_iter, self.conf.options.size, level = 0)
+        hedimg = rgb2hed(segment)
+        hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
+        hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
+        hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
+        hsvimg = img_as_ubyte(hedimg)
 
         # Constants for k-means
         criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 10, 1.0)
         num_colors = 8
 
         # Initial attempt at finding labels
-        fast_image = cv.resize(hsvimg, (int(hsvimg.shape[1] / 4), int(hsvimg.shape[0] / 4)))
-        fast_image = fast_image.reshape((-1,3))
-        fast_image = np.float32(fast_image)
-        _,label,_=cv.kmeans(fast_image, num_colors, None, criteria, 1, cv.KMEANS_RANDOM_CENTERS)
+        cv.setRNGSeed(num_colors)
+        resize_factor = 4
 
+        # Setup full image
         slow_image = hsvimg.reshape((-1,3))
         slow_image = np.float32(slow_image)
-        ret,label,center=cv.kmeans(slow_image, num_colors, label, criteria, 1, cv.KMEANS_RANDOM_CENTERS)
+
+        # Setup smaller image
+        fast_image = cv.resize(hsvimg, None, fx = 1 / resize_factor, fy = 1 / resize_factor)
+        fast_image_array = fast_image.reshape((-1,3))
+        fast_image_array = np.float32(fast_image_array)
+
+        # Generate labels on small image
+        _, fast_label, fast_center = cv.kmeans(fast_image_array, num_colors, None, criteria, 5, cv.KMEANS_RANDOM_CENTERS)
+        fast_label = cv.resize(fast_label, (1,fast_label.size * resize_factor * resize_factor), interpolation = cv.INTER_NEAREST)
+        fast_center = np.multiply(fast_center,(resize_factor * resize_factor))
+
+        # Generate labels on large image
+        ret,label,center=cv.kmeans(slow_image, num_colors, fast_label, criteria, 1, cv.KMEANS_USE_INITIAL_LABELS + cv.KMEANS_PP_CENTERS, fast_center)
+
+        # Update image with new color space
         center = np.uint8(center)
         res = center[label.flatten()]
         hsvimg = res.reshape((hsvimg.shape))
 
-        hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
-        hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
+        # Filter on color space
         if self.conf.options.advanced:
             cv.imshow(self.hed_window, hsvimg)
+            cv.waitKey(1)
 
         # Generate mask
         mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
         kernel = np.ones((3,3), np.uint8)
         mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=5)
 
+        # Get contours and filter them
         contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
         immune_cells = []
         for con in contours:
@@ -239,7 +272,7 @@ class Main:
                     continue
 
                 img = np.array(img)
-                immune_cells, mask = self.get_immune_cells(img)
+                immune_cells, mask = self.get_immune_cells()
                 inside_cells = []
                 if selection:
                     contour = np.array(self.draw_points).reshape((-1,1,2)).astype(np.int32)
@@ -288,23 +321,23 @@ class Main:
             cv.displayStatusBar(self.overview_window, "Immune cells in segment: {}  Immune cells in selection: {}".format(self.current_immune_cells, self.output_selection))
 
             key = cv.waitKeyEx(100)
-            if key == KEY_ESC: # ESC
+            if key == KEY_ESC:
                 return
-            elif key == KEY_LEFT: # 1
+            elif key == KEY_LEFT:
                 self.move_steps = -1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
-            elif key == KEY_RIGHT: # 2
+            elif key == KEY_RIGHT:
                 self.move_steps = 1
                 self.auto_forward = True
                 try:
                     self.current_iter = self.move()
                 except:
                     return
-            elif key == KEY_SPACE: # .
+            elif key == KEY_SPACE:
                 if self.drawing:
                     self.current_printed = False
                     self.update_overview = True
@@ -319,7 +352,7 @@ class Main:
                     self.draw_points = []
                     self.overview_draw_points = []
                     self.selected_regions = []
-            elif key >= 0:
+            elif key != -1:
                 print("Button pressed {}".format(key))
 
     def get_selected_regions(self, points):
