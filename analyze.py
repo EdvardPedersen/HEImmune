@@ -1,4 +1,4 @@
-from math import pi
+from math import pi, floor
 from functools import partial, lru_cache
 import argparse
 from copy import deepcopy
@@ -9,6 +9,7 @@ import numpy as np
 from skimage.color import rgb2hed
 from skimage import img_as_ubyte
 from skimage.exposure import rescale_intensity
+from matplotlib import pyplot as plt
 
 KEY_RIGHT = 65363
 KEY_LEFT = 65361
@@ -208,6 +209,18 @@ class Main:
         center = np.uint8(center)
         res = center[label.flatten()]
         hsvimg = res.reshape((hsvimg.shape))
+
+        dynamic_limit = dict()
+
+        for i, col in enumerate(('hue', 'sat', 'val')):
+            histr = cv.calcHist([hsvimg], [i], None, [256], [0,256])
+            values = np.nonzero(histr)[0]
+            conf = vars(self.conf.options)
+            if col == 'hue':
+                conf['hue_min'] = int(values[int(floor(len(values)/2))])
+                cv.setTrackbarPos('Min hematoxylin', 'Mask', conf['hue_min'])
+        hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
+        hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
 
         # Filter on color space
         if self.conf.options.advanced:
