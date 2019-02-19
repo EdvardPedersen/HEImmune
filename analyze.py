@@ -1,7 +1,6 @@
 from math import pi
 from functools import partial, lru_cache
 import argparse
-from copy import deepcopy
 
 import openslide as osli
 import cv2 as cv
