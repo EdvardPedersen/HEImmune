@@ -1,6 +1,7 @@
 from math import pi
 from functools import partial, lru_cache
 import argparse
+import time
 
 import openslide as osli
 import cv2 as cv
@@ -13,7 +14,6 @@ KEY_RIGHT = 65363
 KEY_LEFT = 65361
 KEY_SPACE = 32
 KEY_ESC = 27
-
 
 class Configuration:
     def __init__(self):
@@ -36,6 +36,7 @@ class Configuration:
         parser.add_argument('--overview_downsample', type=int, default=4)
         parser.add_argument('--selection', action="store_true")
         parser.add_argument('--advanced', action="store_true")
+        parser.add_argument('--cuda', action="store_true")
         return parser.parse_args()
 
     def update_configuration(self, printer, name, value):
@@ -47,6 +48,9 @@ class Configuration:
 class Main:
     def __init__(self):
         self.conf = Configuration()
+        if self.conf.options.cuda:
+            print("enabling CUDA")
+            self.km = __import__("libKMCUDA")
         self.slide = self.load_image()
         self.initialize_windows()
         self.iterations, self.it_colors = self.make_iterations()
@@ -195,13 +199,15 @@ class Main:
         fast_image_array = fast_image.reshape((-1,3))
         fast_image_array = np.float32(fast_image_array)
 
-        # Generate labels on small image
-        _, fast_label, fast_center = cv.kmeans(fast_image_array, num_colors, None, criteria, 5, cv.KMEANS_RANDOM_CENTERS)
-        fast_label = cv.resize(fast_label, (1,fast_label.size * resize_factor * resize_factor), interpolation = cv.INTER_NEAREST)
-        fast_center = np.multiply(fast_center,(resize_factor * resize_factor))
-
         # Generate labels on large image
-        ret,label,center=cv.kmeans(slow_image, num_colors, fast_label, criteria, 1, cv.KMEANS_USE_INITIAL_LABELS + cv.KMEANS_PP_CENTERS, fast_center)
+        if self.conf.options.cuda:
+            center, label = self.km.kmeans_cuda(slow_image, num_colors,tolerance=0.1, seed=4, device=0)
+        else:
+            # Generate labels on small image
+            _, fast_label, fast_center = cv.kmeans(fast_image_array, num_colors, None, criteria, 5, cv.KMEANS_RANDOM_CENTERS)
+            fast_label = cv.resize(fast_label, (1,fast_label.size * resize_factor * resize_factor), interpolation = cv.INTER_NEAREST)
+            fast_center = np.multiply(fast_center,(resize_factor * resize_factor))
+            _, label, center = cv.kmeans(slow_image, num_colors, fast_label, criteria, 1, cv.KMEANS_USE_INITIAL_LABELS + cv.KMEANS_PP_CENTERS, fast_center)
 
         # Update image with new color space
         center = np.uint8(center)
