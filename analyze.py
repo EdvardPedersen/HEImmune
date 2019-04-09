@@ -1,4 +1,4 @@
-from math import pi
+from math import pi, sqrt
 from functools import partial, lru_cache
 import argparse
 import time
@@ -28,7 +28,7 @@ class Configuration:
         parser.add_argument('--val_min', type=int, default=0)
         parser.add_argument('--val_max', type=int, default=255)
         parser.add_argument('--area_min', type=int, default=150)
-        parser.add_argument('--area_max', type=int, default=300)
+        parser.add_argument('--area_max', type=int, default=500)
         parser.add_argument('--circularity', type=int, default=75)
         parser.add_argument('--input', required=True)
         parser.add_argument('--size', type=int, default=2048)
@@ -221,13 +221,21 @@ class Main:
 
         # Generate mask
         mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
-        kernel = np.ones((3,3), np.uint8)
-        mask = cv.morphologyEx(mask, cv.MORPH_OPEN, kernel, iterations=5)
+        kernels = [np.ones((3,3), np.uint8),
+                   cv.getStructuringElement(cv.MORPH_ELLIPSE,(3,3))]
 
-        # Get contours and filter them
-        contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        cons = None
+        for kernel in kernels:
+            temp_mask = mask.copy()
+            temp_mask = cv.morphologyEx(temp_mask, cv.MORPH_OPEN, kernel, iterations=5)
+            contours, hierarchy = cv.findContours(temp_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            if not cons:
+                cons = contours
+            else:
+                cons.extend(contours)
+
         immune_cells = []
-        for con in contours:
+        for con in cons:
             area = cv.contourArea(con)
             perimiter = cv.arcLength(con, True)
             if perimiter == 0:
@@ -235,7 +243,26 @@ class Main:
             circularity = 4*pi*(area/(perimiter**2))
             if self.conf.options.area_min < area < self.conf.options.area_max and circularity*100 > self.conf.options.circularity:
                 immune_cells.append(con)
+
+        for ic in immune_cells:
+            for other_index, other_con in enumerate(immune_cells):
+                if self.contour_overlap(ic, other_con):
+                    immune_cells.pop(other_index)
         return immune_cells, mask
+
+
+    def contour_overlap(self, con1, con2):
+        if id(con1) == id(con2):
+            return False
+        bb1 = cv.boundingRect(con1)
+        bb2 = cv.boundingRect(con2)
+        dist_x = bb1[0] - bb2[0]
+        dist_y = bb1[1] - bb2[1]
+
+        if abs(dist_x) + abs(dist_y) > 10:
+            return False
+        return True
+
 
     def draw_overview_overlay(self):
         if not self.update_overview:
