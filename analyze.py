@@ -10,8 +10,8 @@ from skimage.color import rgb2hed
 from skimage import img_as_ubyte
 from skimage.exposure import rescale_intensity
 
-KEY_RIGHT = 65363
-KEY_LEFT = 65361
+KEY_RIGHT = 120
+KEY_LEFT = 122
 KEY_SPACE = 32
 KEY_ESC = 27
 
