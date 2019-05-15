@@ -163,6 +163,9 @@ class Main:
         real_size = int(size / self.slide.level_downsamples[level])
         return self.slide.read_region(coords,level,(real_size,real_size)).convert('RGB')
 
+    def get_region_coords(self, upperleft, lowerright, level = 0):
+        return self.slide.read_region((upperleft), level, (lowerright[0] - upperleft[0], lowerright[1]-upperleft[1])).convert('RGB')
+
     def get_immune_cells(self):
         # Color limits
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
