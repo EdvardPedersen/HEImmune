@@ -77,6 +77,8 @@ class Main:
         self.current_immune_cells = 0
         self.output_selection = 0
 
+        self.draw_counter = 0
+
 
     def initialize_windows(self):
         self.overview_window = "Overview"
@@ -135,6 +137,10 @@ class Main:
 
     def mouse_draw_overview(self, event, x, y, flags, param):
         if event == cv.EVENT_MOUSEMOVE and self.drawing:
+            self.draw_counter += 1
+            if self.draw_counter > 5:
+                self.update_overview = True
+                self.draw_counter = 0
             real_x = int((x * self.overview_factor) + int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X]))
             real_y = int((y * self.overview_factor) + int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y]))
             self.draw_points.append([real_x, real_y])
@@ -279,16 +285,12 @@ class Main:
             ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y]) + self.conf.options.size) / self.overview_factor) - 1
             return (ret_x, ret_y)
 
-        # Draw rectangles on overview based on how many immune cells are present
-        for iteration, color in zip(self.iterations, self.it_colors):
-            rec_x,rec_y = iteration
-            cv.rectangle(self.overview, min_overview(rec_x, rec_y), max_overview(rec_x, rec_y), color)
-        # Draw rectangle on overview based on current segment
-        current_x, current_y = self.iterations[self.current_iter]
-        cv.rectangle(self.overview, min_overview(current_x, current_y), max_overview(current_x, current_y), (0,255,0))
-        if not self.drawing and len(self.overview_draw_points) > 4:
+        if len(self.overview_draw_points) > 4:
             contours = np.array(self.overview_draw_points).reshape((-1,1,2)).astype(np.int32)
-            cv.drawContours(self.overview, [contours],0,(255,255,255),2)
+            if self.drawing:
+                cv.polylines(self.overview, [contours], False, (255,255,0),2)
+            else:
+                cv.drawContours(self.overview, [contours],0,(255,255,255),2)
         return self.overview
 
 
