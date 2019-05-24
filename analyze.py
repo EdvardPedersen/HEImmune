@@ -34,7 +34,6 @@ class Configuration:
         parser.add_argument('--size', type=int, default=2048)
         parser.add_argument('--window_size', type=int, default=1024)
         parser.add_argument('--overview_downsample', type=int, default=4)
-        parser.add_argument('--selection', action="store_true")
         parser.add_argument('--advanced', action="store_true")
         parser.add_argument('--cuda', action="store_true")
         parser.add_argument('--slow', action="store_true")
@@ -54,15 +53,12 @@ class Main:
             self.km = __import__("libKMCUDA")
         self.slide = self.load_image()
         self.initialize_windows()
-        self.iterations, self.it_colors = self.make_iterations()
         self.overview_factor, self.original_overview = self.generate_overview()
         self.overview = self.original_overview.copy()
         self.create_mask_window()
 
-        self.auto_forward = True
-        if self.conf.options.selection:
-            self.auto_forward = False
-        self.move_steps = 1
+        self.pixels_per_square_mm = ((float(self.slide.properties[osli.PROPERTY_NAME_MPP_X]) * 1000) ** 2)
+        print(self.pixels_per_square_mm)
 
         self.current_iter = 0
         self.current_printed = False
@@ -72,7 +68,6 @@ class Main:
         self.overview_draw_points = []
         self.update_overview = True
         self.selection_start = False
-        self.selected_regions = []
         self.total_selection = 0
         self.current_immune_cells = 0
         self.output_selection = 0
@@ -103,37 +98,6 @@ class Main:
             cv.resizeWindow(self.mask_window, window_size, window_size)
             cv.resizeWindow(self.original_window, window_size, window_size)
 
-    def make_iterations(self):
-        iterations = []
-        it_colors = []
-
-        minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
-        miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
-        sizey = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_HEIGHT])
-        sizex = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_WIDTH])
-        for y in range(miny, miny+sizey, self.conf.options.size):
-            for x in range(minx, minx+sizex, self.conf.options.size):
-                iterations.append((x,y))
-                it_colors.append((0,0,0))
-        return iterations, it_colors
-
-    def move(self):
-        move_to = self.current_iter + self.move_steps
-        if move_to < 0 or move_to > len(self.iterations):
-            print("Tried to move to {}".format(move_to))
-            raise IndexError("Reached end of slide set")
-        self.current_printed = False
-        self.update_overview = True
-        return move_to
-
-    def auto_move(self):
-        if self.auto_forward:
-            try:
-                self.current_iter = self.move()
-            except Exception as e:
-                print("Out of bounds at iteration {}".format(self.current_iter))
-                print(e)
-                exit()
 
     def mouse_draw_overview(self, event, x, y, flags, param):
         if event == cv.EVENT_MOUSEMOVE and self.drawing:
@@ -163,29 +127,17 @@ class Main:
         real_size = int(size / self.slide.level_downsamples[level])
         return self.slide.read_region(coords,level,(real_size,real_size)).convert('RGB')
 
-    def get_region_coords(self, upperleft, lowerright, level = 0):
-        return self.slide.read_region((upperleft), level, (lowerright[0] - upperleft[0], lowerright[1]-upperleft[1])).convert('RGB')
+    def get_region_selection(self, selection, level = 0):
+        x,y,w,h = cv.boundingRect(selection)
+        return self.slide.read_region((x,y), level, (w, h)).convert('RGB')
 
-    def get_immune_cells(self):
+    def get_immune_cells(self, image):
         # Color limits
         hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
         hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
 
-        # First approximation at lower resolution
-        segment = self.get_region(self.current_iter, self.conf.options.size, level = 2)
-        hedimg = rgb2hed(segment)
-        hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
-        hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
-        hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
-        hsvimg = img_as_ubyte(hedimg)
-        mask = cv.inRange((hsvimg), hueLow, hueHigh)
-        contours, hierarchy = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-        if len(contours) < 10:
-            return [], mask
-
         # Full resolution follows
-        segment = self.get_region(self.current_iter, self.conf.options.size, level = 0)
-        hedimg = rgb2hed(segment)
+        hedimg = rgb2hed(image)
         hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
         hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
         hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
@@ -299,55 +251,32 @@ class Main:
 
     def mainloop(self):
         while True:
-            if not self.current_printed:
-                selection = False
-                if len(self.selected_regions) > 0 and self.update_overview:
-                    self.current_iter = self.iterations.index(self.selected_regions.pop())
-                    selection = True
-                img = self.get_region(self.current_iter, self.conf.options.size)
-                if(img.getbbox() == None and self.auto_forward):
-                    self.auto_move()
-                    continue
-
+            contour = np.array(self.draw_points).reshape((-1,1,2)).astype(np.int32)
+            x,y,w,h = cv.boundingRect(contour)
+            area = cv.contourArea(contour)
+            if not self.current_printed and len(self.draw_points) > 4 and not self.drawing:
+                img = self.get_region_selection(contour)
                 img = np.array(img)
-                immune_cells, mask = self.get_immune_cells()
+                immune_cells, mask = self.get_immune_cells(img)
                 inside_cells = []
-                if selection:
-                    contour = np.array(self.draw_points).reshape((-1,1,2)).astype(np.int32)
-                    for cell in immune_cells:
-                        moment = cv.moments(cell)
-                        center_x = int(moment['m10']/moment['m00'])
-                        center_y = int(moment['m01']/moment['m00'])
-                        real_x = center_x + self.iterations[self.current_iter][0]
-                        real_y = center_y + self.iterations[self.current_iter][1]
-                        if cv.pointPolygonTest(contour, (real_x, real_y), False) >= 0:
-                            inside_cells.append(cell)
+                for cell in immune_cells:
+                    moment = cv.moments(cell)
+                    center_x = int(moment['m10']/moment['m00']) + x
+                    center_y = int(moment['m01']/moment['m00']) + y
+                    if cv.pointPolygonTest(contour, (center_x, center_y), False) >= 0:
+                        inside_cells.append(cell)
                     immune_cells = inside_cells
 
-                if len(immune_cells) == 0 and self.auto_forward and not selection:
-                    self.auto_move()
-                    continue
-                else:
-                    if not self.current_printed:
-                        self.current_immune_cells = len(immune_cells)
-                        if not selection:
-                            print("Immune cells in image: {}".format(len(immune_cells)))
-                        else:
-                            print("Immune cells in selection: {}".format(len(immune_cells)))
-                            self.total_selection += len(immune_cells)
-                            if len(self.selected_regions) == 0:
-                                print("Total for the selection: {}".format(self.total_selection))
-                                self.output_selection = self.total_selection
-                                self.total_selection = 0
-                        self.current_printed = True
-                    self.it_colors[self.current_iter] = (0,len(immune_cells)*2,0)
+                if not self.current_printed:
+                    self.current_immune_cells = len(immune_cells)
+                    print("Immune cells in selection: {}".format(len(immune_cells)))
+                    self.current_printed = True
                 img = cv.cvtColor(img, cv.COLOR_RGB2BGR)
                 cvimg2 = img.copy()
                 cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
-                if selection:
-                    updated_list = [[p[0] - self.iterations[self.current_iter][0], p[1] - self.iterations[self.current_iter][1]] for p in self.draw_points]
-                    updated_contour = np.array(updated_list).reshape((-1,1,2)).astype(np.int32)
-                    cv.drawContours(cvimg2, [updated_contour], 0, (255,255,255), 4)
+                updated_list = [[p[0] - x, p[1] - y] for p in self.draw_points]
+                updated_contour = np.array(updated_list).reshape((-1,1,2)).astype(np.int32)
+                cv.drawContours(cvimg2, [updated_contour], 0, (255,255,255), 4)
 
                 if self.conf.options.advanced:
                     cv.imshow(self.mask_window, mask)
@@ -356,32 +285,19 @@ class Main:
 
             over = self.draw_overview_overlay()
             cv.imshow(self.overview_window, over)
-            cv.displayStatusBar(self.overview_window, "Immune cells in segment: {}  Immune cells in selection: {}".format(self.current_immune_cells, self.output_selection))
+
+            if area > 0:
+                cv.displayStatusBar(self.overview_window, "Immune cells in selection: {}, immune cells per square millimeter: {}".format(self.current_immune_cells, self.current_immune_cells / (area / self.pixels_per_square_mm)))
 
             key = cv.waitKeyEx(100)
             if key == KEY_ESC:
                 return
-            elif key == KEY_LEFT:
-                self.move_steps = -1
-                self.auto_forward = True
-                try:
-                    self.current_iter = self.move()
-                except:
-                    return
-            elif key == KEY_RIGHT:
-                self.move_steps = 1
-                self.auto_forward = True
-                try:
-                    self.current_iter = self.move()
-                except:
-                    return
             elif key == KEY_SPACE:
                 if self.drawing:
                     self.current_printed = False
                     self.update_overview = True
                     print("Stopped drawing")
                     self.drawing = False
-                    self.selected_regions = self.get_selected_regions(self.draw_points)
                     self.overview = self.original_overview.copy()
                 else:
                     print("Started drawing")
@@ -392,29 +308,6 @@ class Main:
                     self.selected_regions = []
             elif key != -1:
                 print("Button pressed {}".format(key))
-
-    def get_selected_regions(self, points):
-        regions = []
-        contour = np.array(points).reshape((-1,1,2)).astype(np.int32)
-        for point in points:
-            for region in self.iterations:
-                if point[0] > region[0] and point[0] < region[0] + self.conf.options.size:
-                    if point[1] > region[1] and point[1] < region[1] + self.conf.options.size:
-                        regions.append(region)
-                        continue
-        for region in self.iterations:
-            max_x = region[0] + self.conf.options.size
-            max_y = region[1] + self.conf.options.size
-            hit = max([cv.pointPolygonTest(contour, (max_x, max_y), False),
-                       cv.pointPolygonTest(contour, region, False),
-                       cv.pointPolygonTest(contour, (max_x, region[1]), False),
-                       cv.pointPolygonTest(contour, (region[0], max_y), False)])
-            if hit >= 0:
-                regions.append(region)
-        regions_unique = list(set(regions))
-        regions_unique.sort(key=lambda x: x[0], reverse=True)
-        regions_unique.sort(key=lambda y: y[1], reverse=True)
-        return regions_unique
 
     def load_image(self):
         return osli.OpenSlide(self.conf.options.input)
