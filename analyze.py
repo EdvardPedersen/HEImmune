@@ -58,7 +58,6 @@ class Main:
         self.create_mask_window()
 
         self.pixels_per_square_mm = ((float(self.slide.properties[osli.PROPERTY_NAME_MPP_X]) * 1000) ** 2)
-        print(self.pixels_per_square_mm)
 
         self.current_iter = 0
         self.current_printed = False
@@ -67,10 +66,7 @@ class Main:
         self.draw_points = []
         self.overview_draw_points = []
         self.update_overview = True
-        self.selection_start = False
-        self.total_selection = 0
         self.current_immune_cells = 0
-        self.output_selection = 0
 
         self.draw_counter = 0
 
@@ -120,12 +116,6 @@ class Main:
         region = self.slide.read_region((minx, miny), level, (width,height)).convert('RGB')
         overview = cv.cvtColor(np.array(region), cv.COLOR_RGB2BGR)
         return factor, overview
-
-    @lru_cache(50)
-    def get_region(self, iteration, size, level = 0):
-        coords = self.iterations[iteration]
-        real_size = int(size / self.slide.level_downsamples[level])
-        return self.slide.read_region(coords,level,(real_size,real_size)).convert('RGB')
 
     def get_region_selection(self, selection, level = 0):
         x,y,w,h = cv.boundingRect(selection)
@@ -230,15 +220,6 @@ class Main:
         if not self.update_overview:
             return self.overview
         self.update_overview = False
-        def min_overview(x, y):
-            ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])) / self.overview_factor)
-            ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])) / self.overview_factor)
-            return (ret_x, ret_y)
-
-        def max_overview(x, y):
-            ret_x = int((x - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X]) + self.conf.options.size) / self.overview_factor) - 1
-            ret_y = int((y - int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y]) + self.conf.options.size) / self.overview_factor) - 1
-            return (ret_x, ret_y)
 
         if len(self.overview_draw_points) > 4:
             contours = np.array(self.overview_draw_points).reshape((-1,1,2)).astype(np.int32)
@@ -302,7 +283,6 @@ class Main:
                 else:
                     print("Started drawing")
                     self.drawing = True
-                    self.output_selection = 0
                     self.draw_points = []
                     self.overview_draw_points = []
                     self.selected_regions = []
