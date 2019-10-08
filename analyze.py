@@ -2,6 +2,8 @@ from math import pi, sqrt
 from functools import partial, lru_cache
 import argparse
 import time
+import os
+import glob
 
 import openslide as osli
 import cv2 as cv
@@ -37,6 +39,7 @@ class Configuration:
         parser.add_argument('--advanced', action="store_true")
         parser.add_argument('--cuda', action="store_true")
         parser.add_argument('--slow', action="store_true")
+        parser.add_argument('--create_segments', action="store_true")
         return parser.parse_args()
 
     def update_configuration(self, printer, name, value):
@@ -120,6 +123,24 @@ class Main:
     def get_region_selection(self, selection, level = 0):
         x,y,w,h = cv.boundingRect(selection)
         return self.slide.read_region((x,y), level, (w, h)).convert('RGB')
+
+    def get_sections_selection(self, selection, level = 0):
+        x,y,w,h = cv.boundingRect(selection)
+        real_x = x - (x % 1000)
+        real_y = y - (y % 1000)
+        real_width = x + w + 1000 - ((x + w) % 1000)
+        real_height = y + h + 1000 - ((y + h) % 1000)
+        current_x = real_x
+        current_y = real_y
+        images = {}
+        while current_y < real_height:
+            while current_x < real_width:
+                if current_x not in images:
+                    images[current_x] = {}
+                images[current_x][current_y] = self.slide.read_region((current_x, current_y), level, (1000,1000)).convert('RGB')
+                current_x += 1000
+            current_y += 1000
+        return images
 
     def get_immune_cells(self, image):
         # Color limits
@@ -237,6 +258,24 @@ class Main:
             area = cv.contourArea(contour)
             if not self.current_printed and len(self.draw_points) > 4 and not self.drawing:
                 img = self.get_region_selection(contour)
+                if self.conf.options.create_segments:
+                    if not os.path.exists('selections'):
+                        os.mkdir('selections')
+                    dir_list = glob.glob('selections/*')
+                    target_dir = 100
+                    for i in range(1,100):
+                        if str(i) not in dir_list and target_dir == 100:
+                            target_dir = str(i)
+                    os.mkdir("selections/{}".format(target_dir))
+                    images = self.get_sections_selection(contour)
+                    for x_value in images:
+                        for y_value in images[x_value]:
+                            # save image as 'selections/<selection_num>/<x>_<y>.png'
+                            images[x_value][y_value].save("selections/{}/{}_{}.png".format(target_dir, x_value, y_value))
+
+
+
+
                 img = np.array(img)
                 immune_cells, mask = self.get_immune_cells(img)
                 inside_cells = []
