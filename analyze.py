@@ -250,6 +250,7 @@ class Main:
                 cv.drawContours(self.overview, [contours],0,(255,255,255),2)
         return self.overview
 
+
     def export_images(self, contour):
         if self.conf.options.create_segments:
             if not os.path.exists('selections'):
@@ -265,8 +266,6 @@ class Main:
                 for y_value in images[x_value]:
                     # save image as 'selections/<selection_num>/<x>_<y>.png'
                     images[x_value][y_value].save("selections/{}/{}_{}.png".format(target_dir, x_value, y_value))
-
-
 
 
     def mainloop(self):
