@@ -250,6 +250,24 @@ class Main:
                 cv.drawContours(self.overview, [contours],0,(255,255,255),2)
         return self.overview
 
+    def export_images(self, contour):
+        if self.conf.options.create_segments:
+            if not os.path.exists('selections'):
+                os.mkdir('selections')
+            dir_list = glob.glob('selections/*')
+            target_dir = 100
+            for i in range(1,100):
+                if "selections/{}".format(str(i)) not in dir_list and target_dir == 100:
+                    target_dir = str(i)
+            os.mkdir("selections/{}".format(target_dir))
+            images = self.get_sections_selection(contour)
+            for x_value in images:
+                for y_value in images[x_value]:
+                    # save image as 'selections/<selection_num>/<x>_<y>.png'
+                    images[x_value][y_value].save("selections/{}/{}_{}.png".format(target_dir, x_value, y_value))
+
+
+
 
     def mainloop(self):
         while True:
@@ -257,25 +275,8 @@ class Main:
             x,y,w,h = cv.boundingRect(contour)
             area = cv.contourArea(contour)
             if not self.current_printed and len(self.draw_points) > 4 and not self.drawing:
+                self.export_images(contour)
                 img = self.get_region_selection(contour)
-                if self.conf.options.create_segments:
-                    if not os.path.exists('selections'):
-                        os.mkdir('selections')
-                    dir_list = glob.glob('selections/*')
-                    target_dir = 100
-                    for i in range(1,100):
-                        if str(i) not in dir_list and target_dir == 100:
-                            target_dir = str(i)
-                    os.mkdir("selections/{}".format(target_dir))
-                    images = self.get_sections_selection(contour)
-                    for x_value in images:
-                        for y_value in images[x_value]:
-                            # save image as 'selections/<selection_num>/<x>_<y>.png'
-                            images[x_value][y_value].save("selections/{}/{}_{}.png".format(target_dir, x_value, y_value))
-
-
-
-
                 img = np.array(img)
                 immune_cells, mask = self.get_immune_cells(img)
                 inside_cells = []
