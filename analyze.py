@@ -17,6 +17,107 @@ KEY_LEFT = 122
 KEY_SPACE = 32
 KEY_ESC = 27
 
+class ImageProcess:
+    def __init__(self, conf):
+        self.conf = conf
+        if self.conf.options.cuda:
+            print("enabling CUDA")
+            self.km = __import__("libKMCUDA")
+
+    def get_immune_cells(self, image):
+        # Color limits
+        hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
+        hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
+
+        # Full resolution follows
+        hedimg = rgb2hed(image)
+        hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
+        hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
+        hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
+        hsvimg = img_as_ubyte(hedimg)
+
+        if self.conf.options.slow:
+            # Constants for k-means
+            criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+            num_colors = 8
+
+            # Initial attempt at finding labels
+            cv.setRNGSeed(num_colors)
+            resize_factor = 4
+
+            # Setup full image
+            slow_image = hsvimg.reshape((-1,3))
+            slow_image = np.float32(slow_image)
+
+            # Setup smaller image
+            fast_image = cv.resize(hsvimg, None, fx = 1 / resize_factor, fy = 1 / resize_factor)
+            fast_image_array = fast_image.reshape((-1,3))
+            fast_image_array = np.float32(fast_image_array)
+
+            # Generate labels on large image
+            if self.conf.options.cuda:
+                center, label = self.km.kmeans_cuda(slow_image, num_colors,tolerance=0.1, seed=4, device=0)
+            else:
+                # Generate labels on small image
+                _, fast_label, fast_center = cv.kmeans(fast_image_array, num_colors, None, criteria, 5, cv.KMEANS_RANDOM_CENTERS)
+                fast_label = cv.resize(fast_label, (1,fast_label.size * resize_factor * resize_factor), interpolation = cv.INTER_NEAREST)
+                fast_center = np.multiply(fast_center,(resize_factor * resize_factor))
+                _, label, center = cv.kmeans(slow_image, num_colors, fast_label, criteria, 1, cv.KMEANS_USE_INITIAL_LABELS + cv.KMEANS_PP_CENTERS, fast_center)
+
+            # Update image with new color space
+            center = np.uint8(center)
+            res = center[label.flatten()]
+            hsvimg = res.reshape((hsvimg.shape))
+
+        # Filter on color space
+        if self.conf.options.advanced:
+            cv.imshow(main.hed_window, hsvimg)
+            cv.waitKey(1)
+
+        # Generate mask
+        mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
+        kernels = [np.ones((3,3), np.uint8),
+                   cv.getStructuringElement(cv.MORPH_ELLIPSE,(3,3))]
+
+        cons = None
+        for kernel in kernels:
+            temp_mask = mask.copy()
+            temp_mask = cv.morphologyEx(temp_mask, cv.MORPH_OPEN, kernel, iterations=5)
+            contours, hierarchy = cv.findContours(temp_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            if not cons:
+                cons = contours
+            else:
+                cons.extend(contours)
+
+        immune_cells = []
+        for con in cons:
+            area = cv.contourArea(con)
+            perimiter = cv.arcLength(con, True)
+            if perimiter == 0:
+                continue
+            circularity = 4*pi*(area/(perimiter**2))
+            if self.conf.options.area_min < area < self.conf.options.area_max and circularity*100 > self.conf.options.circularity:
+                immune_cells.append(con)
+
+        for ic in immune_cells:
+            for other_index, other_con in enumerate(immune_cells):
+                if self.contour_overlap(ic, other_con):
+                    immune_cells.pop(other_index)
+        return immune_cells, mask
+
+    def contour_overlap(self, con1, con2):
+        if id(con1) == id(con2):
+            return False
+        bb1 = cv.boundingRect(con1)
+        bb2 = cv.boundingRect(con2)
+        dist_x = bb1[0] - bb2[0]
+        dist_y = bb1[1] - bb2[1]
+
+        if abs(dist_x) + abs(dist_y) > 10:
+            return False
+        return True
+
+
 class Configuration:
     def __init__(self):
         self.options = self._cmd_line_args()
@@ -48,12 +149,10 @@ class Configuration:
         options = vars(self.options)
         options[name] = value
 
-class Main:
-    def __init__(self):
-        self.conf = Configuration()
-        if self.conf.options.cuda:
-            print("enabling CUDA")
-            self.km = __import__("libKMCUDA")
+class Slide:
+    def __init__(self, conf):
+        self.conf = conf
+        self.detector = ImageProcess(self.conf)
         self.slide = self.load_image()
         self.initialize_windows()
         self.overview_factor, self.original_overview = self.generate_overview()
@@ -109,6 +208,7 @@ class Main:
             self.draw_points.append([real_x, real_y])
             self.overview_draw_points.append([x,y])
 
+
     def generate_overview(self):
         minx = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_X])
         miny = int(self.slide.properties[osli.PROPERTY_NAME_BOUNDS_Y])
@@ -120,9 +220,11 @@ class Main:
         overview = cv.cvtColor(np.array(region), cv.COLOR_RGB2BGR)
         return factor, overview
 
+
     def get_region_selection(self, selection, level = 0):
         x,y,w,h = cv.boundingRect(selection)
         return self.slide.read_region((x,y), level, (w, h)).convert('RGB')
+
 
     def get_sections_selection(self, selection, level = 0):
         x,y,w,h = cv.boundingRect(selection)
@@ -141,100 +243,6 @@ class Main:
                 current_x += 1000
             current_y += 1000
         return images
-
-    def get_immune_cells(self, image):
-        # Color limits
-        hueLow = (self.conf.options.hue_min, self.conf.options.sat_min, self.conf.options.val_min)
-        hueHigh = (self.conf.options.hue_max, self.conf.options.sat_max, self.conf.options.val_max)
-
-        # Full resolution follows
-        hedimg = rgb2hed(image)
-        hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
-        hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
-        hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
-        hsvimg = img_as_ubyte(hedimg)
-
-        if self.conf.options.slow:
-            # Constants for k-means
-            criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            num_colors = 8
-
-            # Initial attempt at finding labels
-            cv.setRNGSeed(num_colors)
-            resize_factor = 4
-
-            # Setup full image
-            slow_image = hsvimg.reshape((-1,3))
-            slow_image = np.float32(slow_image)
-
-            # Setup smaller image
-            fast_image = cv.resize(hsvimg, None, fx = 1 / resize_factor, fy = 1 / resize_factor)
-            fast_image_array = fast_image.reshape((-1,3))
-            fast_image_array = np.float32(fast_image_array)
-
-            # Generate labels on large image
-            if self.conf.options.cuda:
-                center, label = self.km.kmeans_cuda(slow_image, num_colors,tolerance=0.1, seed=4, device=0)
-            else:
-                # Generate labels on small image
-                _, fast_label, fast_center = cv.kmeans(fast_image_array, num_colors, None, criteria, 5, cv.KMEANS_RANDOM_CENTERS)
-                fast_label = cv.resize(fast_label, (1,fast_label.size * resize_factor * resize_factor), interpolation = cv.INTER_NEAREST)
-                fast_center = np.multiply(fast_center,(resize_factor * resize_factor))
-                _, label, center = cv.kmeans(slow_image, num_colors, fast_label, criteria, 1, cv.KMEANS_USE_INITIAL_LABELS + cv.KMEANS_PP_CENTERS, fast_center)
-
-            # Update image with new color space
-            center = np.uint8(center)
-            res = center[label.flatten()]
-            hsvimg = res.reshape((hsvimg.shape))
-
-        # Filter on color space
-        if self.conf.options.advanced:
-            cv.imshow(self.hed_window, hsvimg)
-            cv.waitKey(1)
-
-        # Generate mask
-        mask = cv.inRange(img_as_ubyte(hsvimg), hueLow, hueHigh)
-        kernels = [np.ones((3,3), np.uint8),
-                   cv.getStructuringElement(cv.MORPH_ELLIPSE,(3,3))]
-
-        cons = None
-        for kernel in kernels:
-            temp_mask = mask.copy()
-            temp_mask = cv.morphologyEx(temp_mask, cv.MORPH_OPEN, kernel, iterations=5)
-            contours, hierarchy = cv.findContours(temp_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-            if not cons:
-                cons = contours
-            else:
-                cons.extend(contours)
-
-        immune_cells = []
-        for con in cons:
-            area = cv.contourArea(con)
-            perimiter = cv.arcLength(con, True)
-            if perimiter == 0:
-                continue
-            circularity = 4*pi*(area/(perimiter**2))
-            if self.conf.options.area_min < area < self.conf.options.area_max and circularity*100 > self.conf.options.circularity:
-                immune_cells.append(con)
-
-        for ic in immune_cells:
-            for other_index, other_con in enumerate(immune_cells):
-                if self.contour_overlap(ic, other_con):
-                    immune_cells.pop(other_index)
-        return immune_cells, mask
-
-
-    def contour_overlap(self, con1, con2):
-        if id(con1) == id(con2):
-            return False
-        bb1 = cv.boundingRect(con1)
-        bb2 = cv.boundingRect(con2)
-        dist_x = bb1[0] - bb2[0]
-        dist_y = bb1[1] - bb2[1]
-
-        if abs(dist_x) + abs(dist_y) > 10:
-            return False
-        return True
 
 
     def draw_overview_overlay(self):
@@ -277,7 +285,7 @@ class Main:
                 self.export_images(contour)
                 img = self.get_region_selection(contour)
                 img = np.array(img)
-                immune_cells, mask = self.get_immune_cells(img)
+                immune_cells, mask = self.detector.get_immune_cells(img)
                 inside_cells = []
                 for cell in immune_cells:
                     moment = cv.moments(cell)
@@ -343,12 +351,36 @@ class Main:
         cv.createTrackbar('Max area', 'Mask', self.conf.options.area_max, 5000, partial(update, "area_max"))
         cv.createTrackbar('Min circularity', 'Mask', self.conf.options.circularity, 100, partial(update, "circularity"))
 
+class PNGSlide:
+    def __init__(self, conf):
+        self.conf = conf
+        self.image = cv.imread(self.conf.options.input)
+        detector = ImageProcess(self.conf)
+        immune_cells, mask = detector.get_immune_cells(cv.cvtColor(self.image, cv.COLOR_BGR2RGB))
+        cvimg2 = self.image.copy()
+        cvimg2 = cv.drawContours(cvimg2, immune_cells, -1, (0,255,0))
+        self.processed = cvimg2
 
-m = Main()
-m.mainloop()
+    def mainloop(self):
+        while True:
+            cv.imshow("original", self.image)
+            cv.imshow("processed", self.processed)
+            key = cv.waitKeyEx(100)
+            if key == KEY_ESC:
+                return
+            elif key != -1:
+                print("Button pressed {}".format(key))
 
-# Close image file
-m.slide.close()
+if __name__ == "__main__":
+    conf = Configuration()
+    if conf.options.input.endswith(".mrxs"):
+        m = Slide(conf)
+        m.mainloop()
+        # Close image file
+        m.slide.close()
+        # Close all windows
+        cv.destroyAllWindows()
+    elif conf.options.input.endswith(".png"):
+        m = PNGSlide(conf)
+        m.mainloop()
 
-# Close all windows
-cv.destroyAllWindows()
