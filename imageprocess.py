@@ -60,7 +60,7 @@ class ImageProcess:
 
         # Filter on color space
         if self.conf.options.advanced:
-            cv.imshow(main.hed_window, hsvimg)
+            cv.imshow(self.conf.hed_window, hsvimg)
             cv.waitKey(1)
 
         # Generate mask
