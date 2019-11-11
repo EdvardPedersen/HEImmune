@@ -6,10 +6,10 @@ class Configuration:
 
     def _cmd_line_args(self):
         parser = argparse.ArgumentParser()
-        parser.add_argument('--hue_min', type=int, default=80)
+        parser.add_argument('--hue_min', type=int, default=220)
         parser.add_argument('--hue_max', type=int, default=255)
         parser.add_argument('--sat_min', type=int, default=0)
-        parser.add_argument('--sat_max', type=int, default=120)
+        parser.add_argument('--sat_max', type=int, default=50)
         parser.add_argument('--val_min', type=int, default=0)
         parser.add_argument('--val_max', type=int, default=255)
         parser.add_argument('--area_min', type=int, default=190)
@@ -23,6 +23,7 @@ class Configuration:
         parser.add_argument('--cuda', action="store_true")
         parser.add_argument('--slow', action="store_true")
         parser.add_argument('--create_segments', action="store_true")
+        parser.add_argument('--output_file', type=str, default=False)
         return parser.parse_args()
 
     def update_configuration(self, printer, name, value):

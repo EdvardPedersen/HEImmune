@@ -5,6 +5,7 @@ import numpy as np
 from skimage.color import rgb2hed
 from skimage import img_as_ubyte
 from skimage.exposure import rescale_intensity
+from skimage.exposure import equalize_hist
 
 class ImageProcess:
     def __init__(self, conf):
@@ -20,9 +21,9 @@ class ImageProcess:
 
         # Full resolution follows
         hedimg = rgb2hed(image)
-        hedimg[:,:,0] = rescale_intensity(hedimg[:,:,0])
-        hedimg[:,:,1] = rescale_intensity(hedimg[:,:,1])
-        hedimg[:,:,2] = rescale_intensity(hedimg[:,:,2])
+        hedimg[:,:,0] = equalize_hist(hedimg[:,:,0])
+        hedimg[:,:,1] = equalize_hist(hedimg[:,:,1])
+        hedimg[:,:,2] = equalize_hist(hedimg[:,:,2])
         hsvimg = img_as_ubyte(hedimg)
 
         if self.conf.options.slow:

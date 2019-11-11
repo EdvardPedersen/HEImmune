@@ -12,6 +12,8 @@ class PNGSlide:
         immune_cells, _ = detector.get_immune_cells(rgb_image)
         self.processed = cv.drawContours(image, immune_cells, -1, (0,255,0))
         print("Immune cells in image: {}".format(len(immune_cells)))
+        if conf.options.output_file:
+            cv.imwrite(conf.options.output_file, self.processed)
 
     def __call__(self):
         while True:
