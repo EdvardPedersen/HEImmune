@@ -37,7 +37,10 @@ class ImageProcess:
             for other_index, other_con in enumerate(immune_cells[index:]):
                 if self.contour_overlap(ic, other_con):
                     immune_cells.pop(index + other_index)
-        return immune_cells, mask
+        immune_cell_image = np.zeros_like(mask)
+        cv.drawContours(immune_cell_image, immune_cells, -1, 255)
+
+        return immune_cells, mask, immune_cell_image
 
     def _color_correct_image(self, image):
         hedimg = rgb2hed(image)

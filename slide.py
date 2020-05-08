@@ -146,7 +146,7 @@ class Slide:
                 self.export_images(contour)
                 img = self.get_region_selection(contour)
                 img = np.array(img)
-                immune_cells, mask = self.detector.get_immune_cells(img)
+                immune_cells, mask, _ = self.detector.get_immune_cells(img)
                 inside_cells = []
                 for cell in immune_cells:
                     moment = cv.moments(cell)
